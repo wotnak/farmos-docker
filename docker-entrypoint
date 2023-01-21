@@ -6,8 +6,19 @@ if [ $# -gt 0 ]; then
 fi
 
 # If using postgres db, make sure pg_trgm extension is enabled.
-if [ $FARMOS_DB_DRIVER = 'pgsql' ]; then
-  PGPASSWORD=$FARMOS_DB_PASS psql -h $FARMOS_DB_HOST -p $FARMOS_DB_PORT -d $FARMOS_DB_NAME -U $FARMOS_DB_USER -W -c 'create extension if not exists pg_trgm;'
+DB_DRIVER=$(drush eval "return \Drupal\Core\Database\Database::getConnectionInfo()['default']['driver']")
+if [ $DB_DRIVER == "pgsql" ]; then
+  # Wait for postgres to start accepting connections.
+  # When running postgres in docker container it usually starts accepting
+  # connections after small delay compared to when container is reported as
+  # running.
+  RETRIES=5
+  until drush sql:query "select 1" > /dev/null 2>&1 || [ $RETRIES -eq 0 ]; do
+    echo "Waiting for postgres server, $((RETRIES--)) remaining attempts..."
+    sleep 1
+  done
+  # Enable pg_trgm extension.
+  drush sql:query "create extension if not exists pg_trgm;"
 fi
 
 # Start php-fpm.
