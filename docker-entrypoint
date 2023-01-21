@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+if [ $# -gt 0 ]; then
+  exec "$@"
+fi
+
+# If using postgres db, make sure pg_trgm extension is enabled.
+if [ $FARMOS_DB_DRIVER = 'pgsql' ]; then
+  PGPASSWORD=$FARMOS_DB_PASS psql -h $FARMOS_DB_HOST -p $FARMOS_DB_PORT -d $FARMOS_DB_NAME -U $FARMOS_DB_USER -W -c 'create extension if not exists pg_trgm;'
+fi
+
+# Start php-fpm.
+/usr/sbin/php-fpm8.1 -D
+
+# Start apache.
+exec apache2ctl -D FOREGROUND

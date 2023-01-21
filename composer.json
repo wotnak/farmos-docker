@@ -1,0 +1,59 @@
+{
+    "name": "farmos/project",
+    "description": "farmOS project template.",
+    "type": "project",
+    "license": "GPL-2.0-or-later",
+    "homepage": "https://farmOS.org",
+    "support": {
+        "docs": "https://farmOS.org/guide",
+        "forum": "https://farmOS.discourse.group",
+        "chat": "https://matrix.to/#/#farmOS:matrix.org"
+    },
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://packages.drupal.org/8"
+        }
+    ],
+    "require": {
+        "farmos/farmos": "^2.0",
+        "oomphinc/composer-installers-extender": "^2.0.1",
+        "wikimedia/composer-merge-plugin": "^2.0.1",
+        "cweagans/composer-patches": "^1.7.3"
+    },
+    "minimum-stability": "dev",
+    "prefer-stable": true,
+    "extra": {
+        "installer-paths": {
+            "web/core": ["type:drupal-core"],
+            "web/libraries/{$name}": ["type:drupal-library"],
+            "web/modules/contrib/{$name}": ["type:drupal-module"],
+            "web/profiles/farm": ["farmos/farmos"],
+            "web/themes/contrib/{$name}": ["type:drupal-theme"],
+            "web/modules/custom/{$name}": ["type:drupal-custom-module"],
+            "web/themes/custom/{$name}": ["type:drupal-custom-theme"],
+            "drush/Commands/contrib/{$name}": ["type:drupal-drush"]
+        },
+        "merge-plugin": {
+            "require": [
+                "web/profiles/farm/composer.libraries.json",
+                "web/profiles/farm/composer.project.json"
+            ],
+            "merge-extra": true,
+            "merge-extra-deep": true
+        }
+    },
+    "config": {
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "cweagans/composer-patches": true,
+            "composer/installers": true,
+            "wikimedia/composer-merge-plugin": true,
+            "oomphinc/composer-installers-extender": true,
+            "drupal/core-composer-scaffold": true,
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "phpstan/extension-installer": true
+        }
+    }
+}
