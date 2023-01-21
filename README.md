@@ -4,6 +4,7 @@ Custom [farmOS](https://farmos.org) docker image.
 
 Compared to the [official farmOS docker image](https://hub.docker.com/r/farmos/farmos) this one:
 
+- is configurable with environment variables
 - runs as non root user
 - is half the size (around ~480MB compared to ~960MB)
 - automatically installs pg_trgm[^pg_trgm] db extension when using [PostgreSQL](https://www.postgresql.org)
