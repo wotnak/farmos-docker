@@ -23,7 +23,9 @@ RUN set -eux; \
     php8.1-simplexml \
     php8.1-uploadprogress \
     php8.1-xmlwriter \
-    php8.1-zip; \
+    php8.1-zip \
+    php8.1-xdebug; \
+  phpdismod xdebug; \
   mkdir -p /run/php; chown -R ${UID}:${GID} /run/php; \
   # Build and install the GEOS PHP extension.
   # See https://git.osgeo.org/gitea/geos/php-geos
