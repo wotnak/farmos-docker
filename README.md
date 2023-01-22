@@ -20,5 +20,7 @@ A container using this image is configurable through environment variables:
 - `FARMOS_DB_USER` - database user
 - `FARMOS_DB_PASS` - database password
 - `FARMOS_DB_DRIVER` - database driver (`pgsql`|`mysql`)
+- `UID` - user id, used to map file permissions between container and host system
+- `GID` - user group id, used to map file permissions between container and host system
 
 [^pg_trgm]: pg_trgm postgres extension is recommended for Drupal 9 and [required](https://www.drupal.org/project/farm/issues/3270558) for Drupal 10
