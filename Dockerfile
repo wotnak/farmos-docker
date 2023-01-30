@@ -88,15 +88,15 @@ RUN set -eux; \
   a2enmod alias expires headers proxy proxy_fcgi proxy_http rewrite; \
   a2enconf php8.1-fpm; \
   mkdir -p /var/run/apache2; \
-  chown -R ${UID}:${GID} /var/run/apache2 /var/lib/apache2/fcgid /var/www; \
+  chown -R ${UID}:${GID} /var/run/apache2 /var/lib/apache2/fcgid; \
   { \
     echo 'ServerTokens Prod'; \
     echo 'ServerSignature Off'; \
     echo 'ServerName \${FARMOS_DOMAIN}'; \
     echo '<VirtualHost *:80>'; \
-    echo '  DocumentRoot /var/www/farmos/web'; \
+    echo '  DocumentRoot /opt/farmos/web'; \
     echo '  RewriteEngine On'; \
-    echo '  <Directory /var/www/farmos>'; \
+    echo '  <Directory /opt/farmos>'; \
     echo '    Options -Indexes +FollowSymLinks -MultiViews'; \
     echo '    AllowOverride All'; \
     echo '    Require all granted'; \
@@ -115,7 +115,7 @@ RUN set -eux; \
   ln -sfT /dev/stderr "/var/log/apache2/error.log"; \
   ln -sfT /dev/stdout "/var/log/apache2/access.log"; \
   ln -sfT /dev/stdout "/var/log/apache2/other_vhosts_access.log"; \
-  usermod -u $UID www-data; groupmod -g $GID www-data; chmod -R 775 /var/www; \
+  usermod -u $UID www-data; groupmod -g $GID www-data; \
   # Install drush launcher.
   curl -OL https://github.com/drush-ops/drush-launcher/releases/latest/download/drush.phar; \
   chmod +x drush.phar; mv drush.phar /usr/local/bin/drush
@@ -125,8 +125,10 @@ FROM base
 ARG UID=1000
 ARG GID=1000
 
-WORKDIR /var/www/farmos
-RUN mkdir -p web/sites/default; chown -R $UID:$GID /var/www/farmos /var/log
+WORKDIR /opt/farmos
+RUN set -eux; \
+  chmod -R 775 /opt/farmos; \
+  chown -R $UID:$GID /opt/farmos /var/log
 
 # Switch to use a non-root user.
 USER $UID:$GID
