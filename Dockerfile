@@ -6,7 +6,7 @@ ARG GID=1000
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/
 
 RUN set -eux; \
-  install_packages apt-transport-https ca-certificates curl patch postgresql-client; \
+  install_packages apt-transport-https ca-certificates curl patch default-mysql-client-core postgresql-client; \
   curl -sSL https://packages.sury.org/php/README.txt | bash -x; \
   # Install php.
   install_packages \
