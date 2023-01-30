@@ -115,10 +115,7 @@ RUN set -eux; \
   ln -sfT /dev/stderr "/var/log/apache2/error.log"; \
   ln -sfT /dev/stdout "/var/log/apache2/access.log"; \
   ln -sfT /dev/stdout "/var/log/apache2/other_vhosts_access.log"; \
-  usermod -u $UID www-data; groupmod -g $GID www-data; \
-  # Install drush launcher.
-  curl -OL https://github.com/drush-ops/drush-launcher/releases/latest/download/drush.phar; \
-  chmod +x drush.phar; mv drush.phar /usr/local/bin/drush
+  usermod -u $UID www-data; groupmod -g $GID www-data
 
 FROM base
 
@@ -126,6 +123,7 @@ ARG UID=1000
 ARG GID=1000
 
 WORKDIR /opt/farmos
+
 RUN set -eux; \
   chmod -R 775 /opt/farmos; \
   chown -R $UID:$GID /opt/farmos /var/log
@@ -139,5 +137,7 @@ COPY --chown=$UID:$GID ./composer.lock .
 COPY --chown=$UID:$GID ./settings.php web/sites/default/
 
 RUN composer install --no-cache --no-dev
+
+ENV PATH="${PATH}:/opt/farmos/vendor/bin"
 
 ENTRYPOINT ["/docker-entrypoint"]
