@@ -1,0 +1,5 @@
+data/postgres
+data/files/*
+!data/files/.gitkeep
+data/private_files/*
+!data/private_files/.gitkeep
