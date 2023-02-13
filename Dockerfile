@@ -115,7 +115,7 @@ RUN set -eux; \
   ln -sfT /dev/stderr "/var/log/apache2/error.log"; \
   ln -sfT /dev/stdout "/var/log/apache2/access.log"; \
   ln -sfT /dev/stdout "/var/log/apache2/other_vhosts_access.log"; \
-  usermod -u $UID www-data; groupmod -g $GID www-data
+  usermod -u $UID www-data; groupmod -g $GID www-data; chown -R $UID:$GID /opt /var/www
 
 FROM base
 
