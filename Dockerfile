@@ -6,7 +6,7 @@ ARG GID=1000
 COPY --from=composer:2 /usr/bin/composer /usr/local/bin/
 
 RUN set -eux; \
-  install_packages apt-transport-https ca-certificates curl patch default-mysql-client-core postgresql-client; \
+  install_packages apt-transport-https ca-certificates curl patch default-mysql-client-core postgresql-client cron; \
   curl -sSL https://packages.sury.org/php/README.txt | bash -x; \
   # Install php.
   install_packages \
@@ -126,7 +126,12 @@ WORKDIR /opt/farmos
 
 RUN set -eux; \
   chmod -R 775 /opt/farmos; \
-  chown -R $UID:$GID /opt/farmos /var/log
+  chown -R $UID:$GID /opt/farmos /var/log; \
+  # Configure cron.
+  echo '0 0 * * * /bin/bash -l -c "set -a ; source /opt/container.env ; set +a ; cd /opt/farmos ; drush cron"' > /etc/cron.d/farmos-cron; \
+  chmod 0644 /etc/cron.d/farmos-cron; \
+  chmod u+s /usr/sbin/cron; \
+  crontab -u www-data /etc/cron.d/farmos-cron
 
 # Switch to use a non-root user.
 USER $UID:$GID

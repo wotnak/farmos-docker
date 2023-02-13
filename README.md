@@ -8,6 +8,7 @@ Compared to the [official farmOS docker image](https://hub.docker.com/r/farmos/f
 - runs as non root user
 - is half the size (around ~480MB compared to ~960MB)
 - automatically installs pg_trgm[^pg_trgm] db extension when using [PostgreSQL](https://www.postgresql.org)
+- has builtin cron tasks execution everyday at midnight
 
 ## Configuration
 

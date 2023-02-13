@@ -5,6 +5,10 @@ if [ $# -gt 0 ]; then
   exec "$@"
 fi
 
+# Configure cron.
+printenv | grep -v -e UID -e GID | awk -F= '{print "export "$1"=\047"$2"\047" }' > /opt/container.env
+service cron start
+
 # If using postgres db, make sure pg_trgm extension is enabled.
 DB_DRIVER=$(drush eval "return \Drupal\Core\Database\Database::getConnectionInfo()['default']['driver']")
 if [ $DB_DRIVER == "pgsql" ]; then
