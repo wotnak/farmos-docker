@@ -1,29 +1,94 @@
 {
-    "name": "farmos/project",
-    "description": "farmOS project template.",
+    "name": "wotnak/farmos",
+    "description": "Opinionated farmOS project configuration.",
     "type": "project",
     "license": "GPL-2.0-or-later",
-    "homepage": "https://farmOS.org",
-    "support": {
-        "docs": "https://farmOS.org/guide",
-        "forum": "https://farmOS.discourse.group",
-        "chat": "https://matrix.to/#/#farmOS:matrix.org"
-    },
+    "homepage": "https://github.com/wotnak/farmos-docker",
     "repositories": [
         {
             "type": "composer",
             "url": "https://packages.drupal.org/8"
+        },
+        {
+            "type": "package",
+            "package": {
+                "name": "farmos/farmos-map",
+                "version": "2.1.0",
+                "type": "drupal-library",
+                "dist": {
+                  "url": "https://github.com/farmOS/farmOS-map/releases/download/v2.1.0/v2.1.0-dist.zip",
+                  "type": "zip"
+                },
+                "extra": {
+                  "installer-name": "farmOS-map"
+                }
+            }
         }
     ],
     "require": {
-        "cweagans/composer-patches": "^1.7.3",
         "farmos/farmos": "^2.0.2",
+        "farmos/farmos-map": "*",
         "oomphinc/composer-installers-extender": "^2.0.1",
-        "wikimedia/composer-merge-plugin": "^2.0.1"
+        "drupal/core-composer-scaffold": "9.5.4"
+    },
+    "require-dev": {
+        "behat/mink-selenium2-driver": "^1.6",
+        "behat/mink": "^1.10",
+        "brianium/paratest": "^6.3.3",
+        "drupal/coder": "^8.3.17",
+        "friends-of-behat/mink-browserkit-driver": "^1.6.1",
+        "mglaman/phpstan-drupal": "^1.1.29",
+        "mikey179/vfsstream": "^1.6.11",
+        "phpcompatibility/php-compatibility": "^9.3.5",
+        "phpspec/prophecy-phpunit": "^2.0.1",
+        "phpstan/extension-installer": "^1.2",
+        "phpstan/phpstan-deprecation-rules": "^1.1.2",
+        "phpstan/phpstan": "^1.10.6",
+        "phpunit/phpunit": "^9.6.5",
+        "symfony/phpunit-bridge": "^5.4.21"
     },
     "minimum-stability": "dev",
     "prefer-stable": true,
+    "conflict": {
+        "drupal/drupal": "*"
+    },
+    "config": {
+        "preferred-install": "dist",
+        "sort-packages": true,
+        "allow-plugins": {
+            "cweagans/composer-patches": true,
+            "composer/installers": true,
+            "oomphinc/composer-installers-extender": true,
+            "drupal/core-composer-scaffold": true,
+            "dealerdirect/phpcodesniffer-composer-installer": true,
+            "phpstan/extension-installer": true
+        }
+    },
     "extra": {
+        "composer-exit-on-patch-failure": true,
+        "drupal-scaffold": {
+            "locations": {
+                "web-root": "web/"
+            },
+            "file-mapping": {
+                "[web-root]/.csslintrc": false,
+                "[web-root]/.eslintignore": false,
+                "[web-root]/.eslintrc.json": false,
+                "[web-root]/.ht.router.php": false,
+                "[web-root]/example.gitignore": false,
+                "[web-root]/INSTALL.txt": false,
+                "[web-root]/README.md": false,
+                "[web-root]/web.config": false,
+                "[web-root]/modules/README.txt": false,
+                "[web-root]/profiles/README.txt": false,
+                "[web-root]/sites/development.services.yml": false,
+                "[web-root]/sites/README.txt": false,
+                "[web-root]/sites/example.settings.local.php": false,
+                "[web-root]/sites/example.sites.php": false,
+                "[web-root]/themes/README.txt": false
+            }
+        },
+        "enable-patching": true,
         "installer-paths": {
             "web/core": ["type:drupal-core"],
             "web/libraries/{$name}": ["type:drupal-library"],
@@ -33,27 +98,6 @@
             "web/modules/custom/{$name}": ["type:drupal-custom-module"],
             "web/themes/custom/{$name}": ["type:drupal-custom-theme"],
             "drush/Commands/contrib/{$name}": ["type:drupal-drush"]
-        },
-        "merge-plugin": {
-            "require": [
-                "web/profiles/farm/composer.libraries.json",
-                "web/profiles/farm/composer.project.json"
-            ],
-            "merge-extra": true,
-            "merge-extra-deep": true
-        }
-    },
-    "config": {
-        "preferred-install": "dist",
-        "sort-packages": true,
-        "allow-plugins": {
-            "cweagans/composer-patches": true,
-            "composer/installers": true,
-            "wikimedia/composer-merge-plugin": true,
-            "oomphinc/composer-installers-extender": true,
-            "drupal/core-composer-scaffold": true,
-            "dealerdirect/phpcodesniffer-composer-installer": true,
-            "phpstan/extension-installer": true
         }
     }
 }
