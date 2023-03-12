@@ -11,7 +11,7 @@ service cron start
 
 # If using postgres db, make sure pg_trgm extension is enabled.
 DB_DRIVER=$(drush eval "return \Drupal\Core\Database\Database::getConnectionInfo()['default']['driver']")
-if [ $DB_DRIVER == "pgsql" ]; then
+if [ $DB_DRIVER == "pgsql" ] && [ $(drush sql:query "show server_version_num") -ge 130000 ]; then
   # Wait for postgres to start accepting connections.
   # When running postgres in docker container it usually starts accepting
   # connections after small delay compared to when container is reported as
