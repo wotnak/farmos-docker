@@ -16,7 +16,6 @@
         }
     ],
     "require": {
-        "cweagans/composer-patches": "^1.7.3",
         "farmos/farmos": "^2.0.2",
         "oomphinc/composer-installers-extender": "^2.0.1",
         "wikimedia/composer-merge-plugin": "^2.0.1"
