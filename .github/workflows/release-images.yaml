@@ -83,6 +83,7 @@ jobs:
           overwrite: true
 
   build:
+    name: Build ${{ inputs.release-major }}${{ matrix.suffix }} · ${{ matrix.arch }}
     needs: prepare
     strategy:
       fail-fast: false
