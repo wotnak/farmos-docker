@@ -1,0 +1,37 @@
+# Disposable web-only fixture for test-docker-setup.py.
+services:
+  farmos:
+    image: ${IMAGE:-ghcr.io/wotnak/farmos:4}
+    environment:
+      FARMOS_DB_PASS: ${FARMOS_DB_PASS:-unused-test-password}
+      FARMOS_HASH_SALT: ${FARMOS_HASH_SALT:-}
+      FARMOS_DOMAIN: localhost
+    cpus: 2
+    mem_limit: 1g
+    pids_limit: 256
+    ports:
+      - "127.0.0.1::8080"
+    volumes:
+      - files:/opt/farmos/web/sites/default/files
+      - private_files:/opt/farmos/private_files
+    read_only: true
+    tmpfs:
+      - /run:size=16m,mode=1777,noexec,nosuid,nodev
+      - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  files:
+  private_files:
+
+networks:
+  default:
+    internal: true

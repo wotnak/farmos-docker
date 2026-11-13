@@ -1,0 +1,17 @@
+/build/
+/.env
+/examples/**/.env
+/examples/prod/backups/
+/examples/prod-contrib/backups/
+/result
+/result-*
+/.direnv/
+.DS_Store
+__pycache__/
+*.py[cod]
+/.task/
+/tests/e2e/node_modules/
+/tests/e2e/artifacts/
+/.build-inputs/
+/flake.lock
+/.prepare-build.lock/

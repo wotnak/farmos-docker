@@ -1,0 +1,7 @@
+farm_ci_example.result:
+  path: '/farm-ci-example'
+  defaults:
+    _controller: '\Drupal\farm_ci_example\Controller\ExampleController::result'
+    _title: 'Module CI example'
+  requirements:
+    _permission: 'access content'

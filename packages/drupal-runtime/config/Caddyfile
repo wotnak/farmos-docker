@@ -1,0 +1,8 @@
+{
+	import /etc/frankenphp/global.Caddyfile
+	auto_https off
+}
+
+:8080 {
+	import /etc/frankenphp/site.Caddyfile
+}

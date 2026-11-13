@@ -1,0 +1,38 @@
+# Local module CI with optional browser-dependent PHP tests.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: farm_test
+      POSTGRES_USER: farm_test
+      POSTGRES_PASSWORD: farm_test
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U farm_test -d farm_test]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  chrome:
+    image: selenium/standalone-chromium:4.35.0-20250828@sha256:f824da40851c285a547cffe88e87ec4b0e7fdc996a25f678bbb03ee76d7a7467
+    profiles: [browser]
+    shm_size: 2gb
+  ci:
+    image: ${FARMOS_DEV_IMAGE:-ghcr.io/wotnak/farmos:4-dev}
+    user: '0:0'
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      COMPOSER_ALLOW_SUPERUSER: '1'
+      SIMPLETEST_DB: pgsql://farm_test:farm_test@db/farm_test
+      SIMPLETEST_BASE_URL: http://ci:8080
+      BROWSERTEST_OUTPUT_DIRECTORY: /artifacts/browser-output
+      MINK_DRIVER_ARGS_WEBDRIVER: '["chrome", {"goog:chromeOptions": {"w3c": true, "args": ["--headless", "--no-sandbox", "--disable-dev-shm-usage"]}}, "http://chrome:4444/wd/hub"]'
+      XDEBUG_MODE: 'off'
+    volumes:
+      - ${MODULE_PATH:?Set the absolute module checkout path}:/checkout:ro
+      - ${ARTIFACTS_PATH:?Set an existing absolute report directory}:/artifacts
+    healthcheck:
+      test: [CMD, /bin/wget, -q, -O, -, 'http://127.0.0.1:8080/healthz']
+      interval: 2s
+      timeout: 5s
+      retries: 30

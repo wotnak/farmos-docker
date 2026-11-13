@@ -1,0 +1,21 @@
+{
+	import /etc/frankenphp/global.Caddyfile
+	# The explicit HTTP route below preserves /healthz before redirecting.
+	auto_https disable_redirects
+	http_port 8080
+	https_port 8443
+}
+
+{$FARMOS_DOMAIN} {
+	header Strict-Transport-Security "max-age=31536000"
+	import /etc/frankenphp/site.Caddyfile
+}
+
+# Container health checks must not depend on DNS, certificates, or redirects.
+http://:8080 {
+	@health path /healthz
+	route {
+		respond @health "ok" 200
+		redir https://{$FARMOS_DOMAIN}{uri} 308
+	}
+}

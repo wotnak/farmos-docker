@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: farmos
+      POSTGRES_USER: farm
+      POSTGRES_PASSWORD: farm-test-password
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U farm -d farmos']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  farmos:
+    image: ${IMAGE:-ghcr.io/wotnak/farmos:4}
+    pull_policy: never
+    environment:
+      FARMOS_DB_HOST: db
+      FARMOS_DB_NAME: farmos
+      FARMOS_DB_USER: farm
+      FARMOS_DB_PASS: farm-test-password
+      FARMOS_TRUSTED_HOSTS: farmos,localhost,127.0.0.1
+      FARMOS_DOMAIN: farmos
+      FARMOS_AUTO_HTTPS: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1::8080'
+    volumes:
+      - files:/opt/farmos/web/sites/default/files
+      - private_files:/opt/farmos/private_files
+    read_only: true
+    cpus: 2
+    mem_limit: 1g
+    pids_limit: 256
+    tmpfs:
+      - /run:rw,noexec,nosuid,nodev,size=16m,mode=1777
+      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: [CMD, /bin/wget, -q, -O, -, 'http://127.0.0.1:8080/healthz']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.63.0-noble
+    working_dir: /tests
+    command: [npx, --no-install, playwright, test]
+    profiles: [test]
+    networks:
+      - default
+      - browser_egress
+    init: true
+    ipc: private
+    shm_size: 1gb
+    environment:
+      BASE_URL: http://farmos:8080
+      FARMOS_DB_PRECONFIGURED: "1"
+      FARMOS_OAUTH_KEY_DIR: /opt/farmos/private_files/keys
+      TEST_ARTIFACTS: /artifacts
+    volumes:
+      - .:/tests:ro
+      - playwright_node_modules:/tests/node_modules
+      - ${TEST_ARTIFACTS:-./artifacts}:/artifacts
+
+volumes:
+  database:
+  files:
+  private_files:
+  playwright_node_modules:
+
+networks:
+  default:
+    internal: true
+  # The browser needs npm registry access; farmOS and PostgreSQL stay internal.
+  browser_egress:

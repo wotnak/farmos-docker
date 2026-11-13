@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Prepare fresh Nix, upstream, Composer, and application inputs for this build."""
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from releases import ReleaseError, read_policy, validate_major, write_versions
+from nix_source import snapshot
+
+import discover_upstream as discovery
+
+HASH = re.compile(r"^\s*got:\s*(sha256-[A-Za-z0-9+/]{43}=)\s*$", re.MULTILINE)
+
+
+class PreparationError(ReleaseError):
+    """Fresh build input preparation failed."""
+
+
+class Nix:
+    def __init__(self, root):
+        self.root = root
+        self.command = [os.environ.get("NIX", "nix")]
+        self.command += shlex.split(os.environ.get("NIX_FLAGS", '--extra-experimental-features "nix-command flakes"'))
+        self.system = os.environ.get("NIX_SYSTEM")
+
+    def run(self, *args):
+        return subprocess.run(self.command + list(args), cwd=self.root, text=True, capture_output=True)
+
+    def checked(self, *args):
+        result = self.run(*args)
+        if result.returncode:
+            raise PreparationError(result.stderr.strip() or result.stdout.strip() or "Nix command failed")
+        return result.stdout.strip()
+
+    def build(self, *args):
+        # Explicit path flakes include ignored generated inputs without changing
+        # the checkout's Git index. Copy only the files needed by the flake.
+        if any(arg.startswith('.#') for arg in args):
+            source = 'path:' + str(snapshot(self.root))
+            args = tuple(source + arg[1:] if arg.startswith('.#') else arg for arg in args)
+        command = ["build", *args, "--no-link", "--print-out-paths"]
+        if self.system:
+            command += ["--system", self.system]
+        return self.run(*command)
+
+    def resolver_expression(self, attribute, nonce, output_hash=None):
+        system = json.dumps(self.system) if self.system else "builtins.currentSystem"
+        overrides = f'pname = old.pname + "-prepare-{nonce}";'
+        if output_hash is not None:
+            overrides += f" outputHash = {json.dumps(output_hash)};"
+        source = 'path:' + str(snapshot(self.root))
+        return (f"let flake = builtins.getFlake {json.dumps(source)}; "
+                f"in flake.packages.${{{system}}}.{json.dumps(attribute)}.resolveDependencies"
+                f".overrideAttrs (old: {{ {overrides} }})")
+
+
+def actual_hash(result):
+    matches = HASH.findall(result.stderr + "\n" + result.stdout)
+    if not matches:
+        raise PreparationError(result.stderr.strip() or result.stdout.strip() or "Nix failed without an output hash")
+    return matches[-1]
+
+
+def output_path(result):
+    if result.returncode:
+        raise PreparationError(result.stderr.strip() or "Nix build failed")
+    paths = result.stdout.strip().splitlines()
+    if len(paths) != 1 or not Path(paths[0]).is_absolute():
+        raise PreparationError("Nix did not return exactly one absolute output path")
+    return Path(paths[0])
+
+
+def archive_hash(repository, revision):
+    url = f"https://github.com/farmOS/{repository}/archive/{revision}.tar.gz"
+    digest = hashlib.sha256()
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            while chunk := response.read(1024 * 1024):
+                digest.update(chunk)
+    except (urllib.error.URLError, TimeoutError, OSError):
+        raise PreparationError(f"Could not download {repository} archive {revision}") from None
+    return "sha256-" + base64.b64encode(digest.digest()).decode()
+
+
+def resolve_composer(root, nix, selector):
+    attribute = "farmos-4x-dev-app" if selector == "4.x" else f"farmos-{selector}-dev-app"
+    # A unique derivation name forces live dependency resolution even when the
+    # selected release and source archives match a previous invocation.
+    nonce = uuid.uuid4().hex
+    expression = nix.resolver_expression(attribute, nonce)
+    result = nix.build("--impure", "--expr", expression)
+    if result.returncode:
+        resolved_hash = actual_hash(result)
+        expression = nix.resolver_expression(attribute, nonce, resolved_hash)
+        result = nix.build("--impure", "--expr", expression)
+    resolved = output_path(result)
+    destination = root / ".build-inputs/composer" / ("4.x" if selector == "4.x" else f"releases/{selector}")
+    destination.mkdir(parents=True)
+    for name in ("composer.json", "composer.lock"):
+        source = resolved / name
+        if not isinstance(json.loads(source.read_text()), dict):
+            raise PreparationError(f"Resolver returned invalid {name}")
+        shutil.copyfile(source, destination / name)
+
+
+def prepare_app_hash(root, nix, data, selector, field, attribute):
+    print(f"Calculating application output hash for {attribute}...", flush=True)
+    result = nix.build(f'.#"{attribute}"')
+    if result.returncode:
+        value = actual_hash(result)
+    else:
+        # A substituted output can succeed without a mismatch. Record its hash
+        # explicitly rather than leaving the provisional empty value behind.
+        value = nix.checked("hash", "path", "--type", "sha256", str(output_path(result)))
+        if not re.fullmatch(r"sha256-[A-Za-z0-9+/]{43}=", value):
+            raise PreparationError("Nix returned an invalid application output hash")
+    data["versions"][selector][field] = value
+    write_versions(root, data)
+    # This regular build verifies the calculated hash. No reproducibility rebuild.
+    if result.returncode:
+        output_path(nix.build(f'.#"{attribute}"'))
+
+
+def clear_generated(root):
+    build = root / "build"
+    if build.is_symlink():
+        raise PreparationError("Build output directory must not be a symlink")
+    source = build / "nix-source"
+    if source.is_symlink():
+        source.unlink()
+    elif source.exists():
+        shutil.rmtree(source)
+    if (root / ".build-inputs").exists():
+        shutil.rmtree(root / ".build-inputs")
+    (root / "flake.lock").unlink(missing_ok=True)
+
+
+def prepare(root, *, major=None, branch_only=False):
+    root = root.resolve()
+    policy = read_policy(root)
+    if major is not None:
+        validate_major(major, policy["minimum_major"])
+    lock = root / ".prepare-build.lock"
+    try:
+        lock.mkdir()
+    except FileExistsError:
+        raise PreparationError("Another preparation is running, or .prepare-build.lock needs removal after an interrupted run") from None
+    try:
+        clear_generated(root)
+        inputs = root / ".build-inputs"
+        inputs.mkdir()
+        marker = inputs / ".preparing"
+        marker.touch()
+        nix = Nix(root)
+        print("Refreshing Nix flake inputs...", flush=True)
+        source = snapshot(root)
+        nix.checked("flake", "update", "--flake", "path:" + str(source))
+        if not (source / "flake.lock").is_file():
+            raise PreparationError("Nix did not generate flake.lock")
+        shutil.copyfile(source / "flake.lock", root / "flake.lock")
+        selected = {} if branch_only else discovery.latest_releases(policy["minimum_major"])
+        if major is not None:
+            if major not in selected:
+                raise PreparationError(f"No published stable release found for major {major}")
+            selected = {major: selected[major]}
+        data = {"minimum_major": policy["minimum_major"], "versions": {
+            key: {"version": selected[key], "prodHash": "", "devHash": ""}
+            for key in sorted(selected, key=int)
+        }}
+        if major is None:
+            farmos_rev = discovery.branch_head("farmOS")
+            project_rev = discovery.branch_head("composer-project")
+            data["versions"]["4.x"] = {
+                "constraint": "4.x-dev", "farmosRev": farmos_rev,
+                "farmosSourceHash": archive_hash("farmOS", farmos_rev),
+                "composerProjectRev": project_rev,
+                "composerProjectHash": archive_hash("composer-project", project_rev), "devHash": "",
+            }
+        write_versions(root, data)
+        for selector in data["versions"]:
+            print(f"Resolving fresh Composer dependencies for {selector}...", flush=True)
+            resolve_composer(root, nix, selector)
+            if selector == "4.x":
+                prepare_app_hash(root, nix, data, selector, "devHash", "farmos-4x-dev-app")
+            else:
+                prepare_app_hash(root, nix, data, selector, "prodHash", f"farmos-{selector}-app")
+                prepare_app_hash(root, nix, data, selector, "devHash", f"farmos-{selector}-dev-app")
+        marker.unlink()
+        snapshot(root)
+        print("Prepared fresh build inputs in .build-inputs/ and flake.lock; Nix source is build/nix-source.", flush=True)
+        return data
+    except BaseException:
+        # Invalidate the entire generation. A previous successful snapshot is
+        # deliberately not restored and cannot be mistaken for this failed run.
+        clear_generated(root)
+        raise
+    finally:
+        lock.rmdir()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument("--major", help="Prepare only the latest stable release for this major")
+    scope.add_argument("--branch-only", action="store_true", help="Prepare only the current development branch")
+    args = parser.parse_args(argv)
+    try:
+        prepare(Path(__file__).resolve().parent.parent, major=args.major, branch_only=args.branch_only)
+    except (ReleaseError, OSError, ValueError, KeyboardInterrupt) as error:
+        print(f"Build input preparation failed: {error}. Run scripts/prepare-build again before building.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

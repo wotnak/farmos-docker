@@ -1,0 +1,32 @@
+#!/bin/sh
+set -eu
+
+sites=/opt/farmos/web/sites
+template=/usr/share/farmos/sites
+
+if [ ! -d "$sites" ]; then
+    mkdir -p "$sites"
+fi
+
+chmod u+rwx "$sites"
+
+if [ -z "$(find "$sites" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    echo "Initializing the farmOS sites volume."
+    cp -Rp "$template"/. "$sites"/
+fi
+
+chmod u+rwx "$sites/default"
+mkdir -p "$sites/default/files"
+
+if [ ! -w "$sites/default" ]; then
+    echo "Error: $sites/default must be writable by UID $(id -u)." >&2
+    exit 1
+fi
+
+# Keep interactive development installs unless database settings were supplied.
+if [ -n "${FARMOS_DB_DRIVER:-}${FARMOS_DB_HOST:-}${FARMOS_DB_PORT:-}${FARMOS_DB_NAME:-}${FARMOS_DB_USER:-}${FARMOS_DB_PASS:-}" ]; then
+    cp -f /usr/share/farmos/settings.php "$sites/default/settings.php"
+    exec /usr/share/farmos/farmos-init "$@"
+fi
+
+exec "$@"

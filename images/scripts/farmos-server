@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+
+exec /usr/bin/farmos-init /usr/bin/farmos-http-server

@@ -1,0 +1,14 @@
+{
+  "name": "drupal/farm_ci_example",
+  "description": "Container integration fixture for farmOS module CI",
+  "type": "drupal-module",
+  "license": "GPL-2.0-or-later",
+  "require": {
+    "farmos/farmos": "^4",
+    "drupal/farm_ledger": "3.0.0"
+  },
+  "require-dev": {
+    "symfony/clock": "7.4.0",
+    "drupal/farm_crop_plan": "3.0.0-alpha4"
+  }
+}

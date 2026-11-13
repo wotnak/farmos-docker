@@ -1,0 +1,11 @@
+# Requires Docker Compose 2.24.4 or later for !override.
+# docker compose -f compose.yaml -f compose.https.yaml up -d
+services:
+  farmos:
+    environment:
+      FARMOS_AUTO_HTTPS: "true"
+      FARMOS_DOMAIN: ${FARMOS_DOMAIN:?set FARMOS_DOMAIN to your public hostname}
+      FARMOS_TRUSTED_HOSTS: ${FARMOS_TRUSTED_HOSTS:-${FARMOS_DOMAIN}}
+    ports: !override
+      - "${FARMOS_HTTPS_BIND_ADDRESS:-0.0.0.0}:${FARMOS_HTTP_PORT:-80}:8080"
+      - "${FARMOS_HTTPS_BIND_ADDRESS:-0.0.0.0}:${FARMOS_HTTPS_PORT:-443}:8443"

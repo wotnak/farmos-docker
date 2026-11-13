@@ -1,0 +1,104 @@
+# Add to a module's .gitlab-ci.yml on Drupal.org alongside its standard templates.
+# Override FARMOS_DEV_IMAGE in CI/CD variables for a published registry image/digest.
+farmos-module-ci:
+  stage: test
+  image:
+    name: $FARMOS_DEV_IMAGE
+    entrypoint: [""]
+    docker:
+      user: '0:0' # Requires GitLab Runner 16.8+.
+  services:
+    - name: postgres:17-alpine
+      alias: postgres
+  variables:
+    FARMOS_DEV_IMAGE: ghcr.io/wotnak/farmos:4-dev
+    POSTGRES_DB: farm_test
+    POSTGRES_USER: farm_test
+    POSTGRES_PASSWORD: farm_test
+    SIMPLETEST_DB: pgsql://farm_test:farm_test@postgres/farm_test
+    SIMPLETEST_BASE_URL: http://127.0.0.1:8080
+    BROWSERTEST_OUTPUT_DIRECTORY: /tmp/farmos-artifacts/browser-output
+    COMPOSER_ALLOW_SUPERUSER: '1'
+    XDEBUG_MODE: 'off'
+  before_script: [] # Do not inherit Debian-specific setup from other jobs.
+  script:
+    - |
+      set -e
+      cd /opt/farmos
+      chmod -R u+w .
+      mkdir -p /tmp/farmos-artifacts/browser-output
+      ready=false
+      for attempt in $(seq 1 60); do
+        if pg_isready -h postgres -U farm_test -d farm_test; then ready=true; break; fi
+        sleep 1
+      done
+      test "$ready" = true
+      checkout="$CI_PROJECT_DIR"
+      if [ -f "$checkout/composer.json" ]; then
+        module_name=$(php -r '
+          $package = json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR);
+          if (!preg_match("~^drupal/([a-z][a-z0-9_]*)$~D", $package["name"] ?? "", $match)) {
+            fwrite(STDERR, "Expected a drupal/MACHINE_NAME package name in composer.json.\n");
+            exit(1);
+          }
+          echo $match[1];
+        ' "$checkout/composer.json")
+      else
+        set -- "$checkout"/*.info.yml
+        if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+          echo 'Without composer.json, expected exactly one *.info.yml in the checkout root.' >&2
+          exit 1
+        fi
+        module_name=$(basename "$1" .info.yml)
+      fi
+      case "$module_name" in
+        ''|[!a-z]*|*[!a-z0-9_]*) echo 'Invalid module machine name.' >&2; exit 1 ;;
+      esac
+      if [ -f "$checkout/composer.json" ]; then
+        composer config repositories.module-ci "$(printf '{"type":"path","url":"%s","options":{"symlink":false,"versions":{"drupal/%s":"dev-ci"}}}' "$checkout" "$module_name")"
+        composer require --no-interaction --prefer-dist "drupal/$module_name:dev-ci"
+      else
+        # Without Composer metadata, install additional dependencies explicitly below.
+        mkdir "web/modules/$module_name"
+        cp -R "$checkout/." "web/modules/$module_name/"
+      fi
+      # Add this module's require-dev dependencies explicitly when needed:
+      # composer require --dev --no-interaction symfony/clock:7.4.0
+      cp composer.json composer.lock /tmp/farmos-artifacts/
+      module="web/modules/$module_name"
+      phpcs_config=/opt/farmos/phpcs.xml
+      for config in .phpcs.xml phpcs.xml .phpcs.xml.dist phpcs.xml.dist; do
+        if [ -f "$module/$config" ]; then phpcs_config="$module/$config"; break; fi
+      done
+      phpstan_config=
+      for config in phpstan.neon phpstan.neon.dist phpstan.dist.neon; do
+        if [ -f "$module/$config" ]; then phpstan_config="$module/$config"; break; fi
+      done
+      if [ -z "$phpstan_config" ]; then
+        # Core ignores apply to its full codebase; an unused ignore is harmless here.
+        printf '%s\n' 'includes:' '  - /opt/farmos/phpstan.neon' 'parameters:' '  reportUnmatchedIgnoredErrors: false' > /tmp/farmos-module-phpstan.neon
+        phpstan_config=/tmp/farmos-module-phpstan.neon
+      fi
+      php vendor/bin/phpcs --standard="$phpcs_config" --report-junit=/tmp/farmos-artifacts/phpcs.xml "$module" </dev/null
+      php vendor/bin/phpstan analyse -c "$phpstan_config" --no-progress --error-format=junit "$module" > /tmp/farmos-artifacts/phpstan.xml 2> /tmp/farmos-artifacts/phpstan.log
+      farmos-server > /tmp/farmos-artifacts/server.log 2>&1 &
+      server_pid=$!
+      trap 'kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true' EXIT
+      ready=false
+      for attempt in $(seq 1 60); do
+        if wget -T 2 -q -O /dev/null http://127.0.0.1:8080/healthz; then ready=true; break; fi
+        sleep 1
+      done
+      test "$ready" = true
+      php vendor/bin/phpunit -c phpunit.xml --fail-on-empty-test-suite --log-junit /tmp/farmos-artifacts/phpunit.xml "$module"
+  after_script:
+    - mkdir -p "$CI_PROJECT_DIR/artifacts/browser-output"
+    - cp -R /tmp/farmos-artifacts/. "$CI_PROJECT_DIR/artifacts/"
+    - if [ -d /opt/farmos/web/sites/simpletest/browser_output ]; then cp -R /opt/farmos/web/sites/simpletest/browser_output/. "$CI_PROJECT_DIR/artifacts/browser-output/"; fi
+  artifacts:
+    when: always
+    expire_in: 2 weeks
+    paths: [artifacts/]
+    reports:
+      junit: [artifacts/phpunit.xml, artifacts/phpcs.xml, artifacts/phpstan.xml]
+  allow_failure: false

@@ -1,0 +1,349 @@
+name: Release images
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Promote public tags after all builds and tests pass
+        type: boolean
+        required: false
+        default: true
+      release-major:
+        description: Release major to build, for example 4
+        type: string
+        required: true
+  workflow_call:
+    inputs:
+      publish:
+        description: Promote public tags after all builds and tests pass
+        type: boolean
+        required: false
+        default: true
+      release-major:
+        description: Release major to build
+        type: string
+        required: true
+      source-revision:
+        description: Exact source revision to build
+        type: string
+        required: false
+        default: ""
+      build-inputs-artifact:
+        description: Artifact containing .build-inputs and flake.lock for this publication
+        type: string
+        required: false
+        default: ""
+
+concurrency:
+  group: publish-release-images-${{ inputs.release-major }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  actions: read
+
+env:
+  IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY || 'ghcr.io/wotnak/farmos' }}
+  RELEASE_MAJOR: ${{ inputs.release-major }}
+  SIGNING_IDENTITY: ${{ github.server_url }}/${{ github.repository }}/.github/workflows/release-images.yaml@${{ github.ref }}
+  SOURCE_REVISION: ${{ inputs.source-revision || github.sha }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact: ${{ inputs.build-inputs-artifact || format('build-inputs-release-{0}', inputs.release-major) }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: inputs.build-inputs-artifact == ''
+        with:
+          ref: ${{ inputs.source-revision || github.sha }}
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+        if: inputs.build-inputs-artifact == ''
+      - name: Resolve fresh build dependencies
+        if: inputs.build-inputs-artifact == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIX_SYSTEM: x86_64-linux
+        run: scripts/prepare-build --major "$RELEASE_MAJOR"
+      - name: Share resolved build inputs
+        if: inputs.build-inputs-artifact == ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-inputs-release-${{ inputs.release-major }}
+          path: |
+            .build-inputs/
+            flake.lock
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+            arch: amd64
+            variant: default
+            suffix: ""
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            arch: arm64
+            variant: default
+            suffix: ""
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+            arch: amd64
+            variant: dev
+            suffix: -dev
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            arch: arm64
+            variant: dev
+            suffix: -dev
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+            arch: amd64
+            variant: runtime
+            suffix: -runtime
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            arch: arm64
+            variant: runtime
+            suffix: -runtime
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+            arch: amd64
+            variant: dev-runtime
+            suffix: -dev-runtime
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            arch: arm64
+            variant: dev-runtime
+            suffix: -dev-runtime
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source-revision || github.sha }}
+      - name: Download resolved build inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: .
+      - name: Include generated inputs in the Nix source
+        run: git add -f -- .build-inputs flake.lock
+      - name: Record the image source identity
+        run: |
+          python3 scripts/image_evidence.py prepare-source
+          git add -- images/source.json
+      - name: Validate release major
+        run: python3 scripts/releases.py --major "$RELEASE_MAJOR" --field version
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+        with:
+          primary-key: nix-${{ matrix.system }}-${{ inputs.release-major }}-${{ matrix.variant }}-${{ hashFiles('flake.nix', 'flake.lock', '.build-inputs/**', 'packages/**', 'images/**', 'versions.json', 'scripts/**', 'tests/check-runtime.php') }}
+          restore-prefixes-first-match: nix-${{ matrix.system }}-${{ inputs.release-major }}-${{ matrix.variant }}-
+      - uses: ./.github/actions/setup-image-evidence
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and test image
+        shell: bash
+        env:
+          IMAGE_VARIANT: ${{ matrix.variant }}
+          IMAGE_SUFFIX: ${{ matrix.suffix }}
+        run: |
+          nix --extra-experimental-features "nix-command flakes" \
+            run --system "${{ matrix.system }}" ".#\"farmos-${RELEASE_MAJOR}${IMAGE_SUFFIX}\".copyToDockerDaemon"
+          export IMAGE="ghcr.io/wotnak/farmos:${RELEASE_MAJOR}${IMAGE_SUFFIX}"
+          case "$IMAGE_VARIANT" in
+            runtime) python3 tests/runtime-image-test.py ;;
+            dev-runtime) DEV=1 python3 tests/runtime-image-test.py ;;
+            dev) DEV=1 sh tests/smoke-test.sh ;;
+            default) sh tests/smoke-test.sh ;;
+          esac
+      - name: Test database settings and connections
+        if: matrix.variant == 'default'
+        timeout-minutes: 10
+        env:
+          DB_TEST_IMAGE: ghcr.io/wotnak/farmos:${{ inputs.release-major }}
+        run: python3 tests/test-database-settings.py
+      - name: Install Task
+        if: matrix.variant == 'default' || matrix.variant == 'dev'
+        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2
+        with:
+          version: '3.53.1'
+      - name: Test farmOS installation, core workflows and persistence
+        if: matrix.variant == 'default'
+        timeout-minutes: 30
+        env:
+          IMAGE: ghcr.io/wotnak/farmos:${{ inputs.release-major }}
+          TEST_ARTIFACTS: ${{ runner.temp }}/acceptance-tests
+        run: task e2e-test-loaded
+      - name: Run upstream farmOS PHPUnit tests
+        if: matrix.variant == 'dev'
+        timeout-minutes: 60
+        env:
+          IMAGE: ghcr.io/wotnak/farmos:${{ inputs.release-major }}-dev
+          TEST_ARTIFACTS: ${{ runner.temp }}/phpunit-tests
+        run: task phpunit-test-loaded
+      - name: Verify contributed module CI commands
+        if: matrix.variant == 'dev'
+        timeout-minutes: 30
+        env:
+          IMAGE: ghcr.io/wotnak/farmos:${{ inputs.release-major }}-dev
+          TEST_ARTIFACTS: ${{ runner.temp }}/contrib-ci-tests
+        run: task contrib-ci-test-loaded
+      - name: Save application test reports
+        if: always() && (matrix.variant == 'default' || matrix.variant == 'dev')
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: application-tests-${{ inputs.release-major }}-${{ matrix.variant }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/acceptance-tests/
+            ${{ runner.temp }}/phpunit-tests/
+            ${{ runner.temp }}/contrib-ci-tests/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+      - name: Push architecture candidate
+        id: candidate
+        shell: bash
+        env:
+          IMAGE_SUFFIX: ${{ matrix.suffix }}
+        run: |
+          repository="$IMAGE_REPOSITORY"
+          output="farmos-${RELEASE_MAJOR}${IMAGE_SUFFIX}"
+          evidence="$RUNNER_TEMP/image-evidence"
+          mkdir -p "$evidence"
+          nix --extra-experimental-features "nix-command flakes" \
+            run --system "${{ matrix.system }}" ".#\"$output\".copyTo" -- \
+            --format oci --digestfile "$evidence/digest.txt" \
+            "docker://${repository}:build-${GITHUB_RUN_ID}-${RELEASE_MAJOR}${IMAGE_SUFFIX}-${{ matrix.arch }}"
+          image="${repository}@$(cat "$evidence/digest.txt")"
+          python3 scripts/image_evidence.py architecture \
+            --system "${{ matrix.system }}" --output "$output" \
+            --image "$image" --destination "$evidence"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - name: Sign the image and its provenance
+        env:
+          CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
+        run: scripts/attest-image sign "$CANDIDATE_IMAGE" "$RUNNER_TEMP/image-evidence" architecture
+      - name: Save architecture digests and evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: image-evidence-${{ inputs.release-major }}${{ matrix.suffix }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image-evidence/
+          if-no-files-found: error
+          retention-days: 14
+          overwrite: true
+
+  manifest:
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source-revision || github.sha }}
+      - name: Download resolved build inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: .
+      - name: Include generated inputs in the Nix source
+        run: git add -f -- .build-inputs flake.lock
+      - name: Record the image source identity
+        run: |
+          python3 scripts/image_evidence.py prepare-source
+          git add -- images/source.json
+      - uses: ./.github/actions/setup-image-evidence
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download architecture evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: image-evidence-${{ inputs.release-major }}-*
+          path: ${{ runner.temp }}/children
+      - name: Verify evidence and publish signed candidate indexes
+        shell: bash
+        run: |
+          major=$(python3 scripts/releases.py --major "$RELEASE_MAJOR" --field major)
+          for suffix in "" -dev -runtime -dev-runtime; do
+            scripts/publish-index "farmos-${major}${suffix}" "$RUNNER_TEMP/children" \
+              "$RUNNER_TEMP/index-evidence/${major}${suffix}"
+          done
+      - name: Save index evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: index-evidence-${{ inputs.release-major }}
+          path: ${{ runner.temp }}/index-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+
+  promote:
+    needs: [prepare, build, manifest]
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.source-revision || github.sha }}
+      - name: Download resolved build inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: .
+      - name: Include generated inputs in the Nix source
+        run: git add -f -- .build-inputs flake.lock
+      - name: Record source identity
+        run: |
+          python3 scripts/image_evidence.py prepare-source
+          git add -- images/source.json
+      - uses: ./.github/actions/setup-image-evidence
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: image-evidence-${{ inputs.release-major }}-*
+          path: ${{ runner.temp }}/children
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: index-evidence-${{ inputs.release-major }}
+          path: ${{ runner.temp }}/indexes
+      - name: Verify the complete image set and promote public tags
+        run: |
+          python3 scripts/promote-images --release-major "$RELEASE_MAJOR" \
+            --indexes "$RUNNER_TEMP/indexes" --children "$RUNNER_TEMP/children" \
+            --destination "$RUNNER_TEMP/promotion"
+      - name: Save promotion report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: promotion-${{ inputs.release-major }}
+          path: ${{ runner.temp }}/promotion/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true

@@ -1,0 +1,30 @@
+services:
+  farmos:
+    image: ${RUNTIME_IMAGE:-ghcr.io/wotnak/farmos:4-runtime}
+    volumes:
+      - type: bind
+        source: ${FARMOS_PROJECT_PATH:?run scripts/contrib-prepare.sh first}
+        target: /opt/farmos
+        read_only: true
+        bind:
+          create_host_path: false
+      - files:/opt/farmos/web/sites/default/files
+      - private_files:/opt/farmos/private_files
+
+  # Initialize only the disposable test data volumes. Runtime itself stays non-root.
+  contrib-storage:
+    image: ${RUNTIME_IMAGE:-ghcr.io/wotnak/farmos:4-runtime}
+    pull_policy: never
+    user: '0:0'
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - chown 65532:65532 /files /private; mkdir -p /private/files /private/keys; chown 65532:65532 /private/files /private/keys
+    profiles: [test]
+    network_mode: none
+    volumes:
+      - files:/files
+      - private_files:/private
+
+  playwright:
+    environment:
+      CONTRIB_MODULES: ${CONTRIB_MODULES:-}

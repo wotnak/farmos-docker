@@ -1,0 +1,4 @@
+*
+!Dockerfile
+!dependencies/
+!dependencies/composer.json

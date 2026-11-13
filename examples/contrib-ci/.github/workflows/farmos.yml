@@ -1,0 +1,105 @@
+name: farmOS module CI
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  farmos:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: farm_test
+          POSTGRES_USER: farm_test
+          POSTGRES_PASSWORD: farm_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U farm_test -d farm_test"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: module
+      - name: Composer, PHPCS, PHPStan and PHPUnit
+        env:
+          FARMOS_DEV_IMAGE: ${{ vars.FARMOS_DEV_IMAGE || 'ghcr.io/wotnak/farmos:4-dev' }}
+        run: |
+          mkdir -p artifacts
+          docker run --rm -i --user 0:0 --network host --entrypoint /bin/bash \
+            --mount "type=bind,source=$PWD/module,target=/checkout,readonly" \
+            --mount "type=bind,source=$PWD/artifacts,target=/artifacts" \
+            -e COMPOSER_ALLOW_SUPERUSER=1 -e XDEBUG_MODE=off \
+            -e SIMPLETEST_DB=pgsql://farm_test:farm_test@127.0.0.1/farm_test \
+            -e SIMPLETEST_BASE_URL=http://127.0.0.1:8080 \
+            -e BROWSERTEST_OUTPUT_DIRECTORY=/artifacts/browser-output \
+            "$FARMOS_DEV_IMAGE" -se <<'CI'
+          cd /opt/farmos
+          chmod -R u+w .
+          checkout=/checkout
+          if [ -f "$checkout/composer.json" ]; then
+            module_name=$(php -r '
+              $package = json_decode(file_get_contents($argv[1]), true, flags: JSON_THROW_ON_ERROR);
+              if (!preg_match("~^drupal/([a-z][a-z0-9_]*)$~D", $package["name"] ?? "", $match)) {
+                fwrite(STDERR, "Expected a drupal/MACHINE_NAME package name in composer.json.\n");
+                exit(1);
+              }
+              echo $match[1];
+            ' "$checkout/composer.json")
+          else
+            set -- "$checkout"/*.info.yml
+            if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+              echo 'Without composer.json, expected exactly one *.info.yml in the checkout root.' >&2
+              exit 1
+            fi
+            module_name=$(basename "$1" .info.yml)
+          fi
+          case "$module_name" in
+            ''|[!a-z]*|*[!a-z0-9_]*) echo 'Invalid module machine name.' >&2; exit 1 ;;
+          esac
+          if [ -f "$checkout/composer.json" ]; then
+            composer config repositories.module-ci "$(printf '{"type":"path","url":"%s","options":{"symlink":false,"versions":{"drupal/%s":"dev-ci"}}}' "$checkout" "$module_name")"
+            composer require --no-interaction --prefer-dist "drupal/$module_name:dev-ci"
+          else
+            # Without Composer metadata, install additional dependencies explicitly below.
+            mkdir "web/modules/$module_name"
+            cp -R "$checkout/." "web/modules/$module_name/"
+          fi
+          # Add THIS module's test dependencies explicitly, if any:
+          # composer require --dev --no-interaction symfony/clock:7.4.0
+          cp composer.json composer.lock /artifacts/
+          module="web/modules/$module_name"
+          phpcs_config=/opt/farmos/phpcs.xml
+          for config in .phpcs.xml phpcs.xml .phpcs.xml.dist phpcs.xml.dist; do
+            if [ -f "$module/$config" ]; then phpcs_config="$module/$config"; break; fi
+          done
+          phpstan_config=
+          for config in phpstan.neon phpstan.neon.dist phpstan.dist.neon; do
+            if [ -f "$module/$config" ]; then phpstan_config="$module/$config"; break; fi
+          done
+          if [ -z "$phpstan_config" ]; then
+            # Core ignores apply to its full codebase; an unused ignore is harmless here.
+            printf '%s\n' 'includes:' '  - /opt/farmos/phpstan.neon' 'parameters:' '  reportUnmatchedIgnoredErrors: false' > /tmp/farmos-module-phpstan.neon
+            phpstan_config=/tmp/farmos-module-phpstan.neon
+          fi
+          php vendor/bin/phpcs --standard="$phpcs_config" --report-junit=/artifacts/phpcs.xml "$module" </dev/null
+          php vendor/bin/phpstan analyse -c "$phpstan_config" --no-progress --error-format=junit "$module" > /artifacts/phpstan.xml 2> /artifacts/phpstan.log
+          mkdir -p /artifacts/browser-output
+          farmos-server > /artifacts/server.log 2>&1 &
+          server_pid=$!
+          trap 'status=$?; if [ -d web/sites/simpletest/browser_output ]; then cp -R web/sites/simpletest/browser_output/. /artifacts/browser-output/ || status=1; fi; kill "$server_pid" 2>/dev/null || true; wait "$server_pid" 2>/dev/null || true; exit "$status"' EXIT
+          ready=false
+          for attempt in $(seq 1 60); do
+            if wget -T 2 -q -O /dev/null http://127.0.0.1:8080/healthz; then ready=true; break; fi
+            sleep 1
+          done
+          test "$ready" = true
+          php vendor/bin/phpunit -c phpunit.xml --fail-on-empty-test-suite --log-junit /artifacts/phpunit.xml "$module"
+          CI
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: farmos-module-ci
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14

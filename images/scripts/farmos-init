@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+for directory in /opt/farmos/web/sites/default/files /opt/farmos/private_files; do
+    if [ ! -d "$directory" ] || [ ! -w "$directory" ]; then
+        echo "Error: mount $directory writable by UID $(id -u)." >&2
+        exit 1
+    fi
+done
+umask 077
+mkdir -p /opt/farmos/private_files/files /opt/farmos/private_files/keys /tmp/farmos/php
+
+/usr/bin/php -r '
+    $database = require "/usr/share/farmos/database.php";
+    require "/usr/share/farmos/hash-salt.php";
+    if ($database["driver"] === "sqlite") {
+        $directory = dirname($database["database"]);
+        if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+            throw new RuntimeException("Cannot create the SQLite database directory.");
+        }
+        if (!is_writable($directory) || (file_exists($database["database"]) && !is_writable($database["database"]))) {
+            throw new RuntimeException("The SQLite database and its directory must be writable by the container user.");
+        }
+    }
+'
+
+exec "$@"

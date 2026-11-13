@@ -1,0 +1,7 @@
+name: farmOS CI example
+type: module
+description: Exercises module CI dependency installation and test discovery.
+package: Testing
+core_version_requirement: ^11
+dependencies:
+  - farm_ledger:farm_ledger

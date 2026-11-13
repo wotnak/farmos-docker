@@ -1,0 +1,7 @@
+#!/bin/sh
+set -eu
+
+while :; do
+    sleep "${FARMOS_CRON_INTERVAL:-900}"
+    /usr/bin/php /opt/farmos/vendor/drush/drush/drush.php cron || true
+done

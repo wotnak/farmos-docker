@@ -1,0 +1,7 @@
+# Opt in to outbound access for scheduled integrations and update checks.
+# The web service already has the frontend bridge for published ports.
+services:
+  cron:
+    networks:
+      default: {}
+      frontend: {}

@@ -1,0 +1,5 @@
+{
+    "require": {
+        "drupal/farm_ledger": "*"
+    }
+}

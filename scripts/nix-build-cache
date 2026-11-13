@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Maintain only the Docker-backed Nix build cache, never application volumes.
+set -euo pipefail
+
+action=${1:-info}
+case "$action" in
+  info|prune) ;;
+  *) echo 'Usage: scripts/nix-build-cache [info|prune]' >&2; exit 2 ;;
+esac
+root=$(cd "$(dirname "$0")/.." && pwd)
+volume=${NIX_CACHE_VOLUME:-farmos-nix-build-cache}
+builder=${NIX_BUILDER_IMAGE:-nixos/nix:2.31.2}
+major=${RELEASE_MAJOR:-$(python3 "$root/scripts/releases.py" --field major)}
+# Refuse accidental creation of an empty volume after a typo.
+docker volume inspect "$volume" >/dev/null
+if [ -n "$(docker ps -q --filter "volume=$volume")" ]; then
+  echo "Stop builds using $volume before inspecting or pruning it." >&2
+  exit 1
+fi
+
+docker run --rm \
+  --mount "type=volume,source=$volume,target=/nix" \
+  --mount "type=bind,source=$root,target=/work,readonly" \
+  --workdir /work -e CACHE_ACTION="$action" -e RELEASE_MAJOR="$major" \
+  "$builder" sh -eu -c '
+    echo "Nix store before:"
+    du -sh /nix/store
+    if [ "$CACHE_ACTION" = info ]; then
+      echo "Registered persistent roots:"
+      nix-store --gc --print-roots | grep -v "^/proc/" || true
+      exit 0
+    fi
+    # Pin the selected release variants and branch image before collecting old
+    # outputs. The image closures include everything required to reload them.
+    mkdir -p /nix/var/nix/gcroots/farmos-containers
+    nix --extra-experimental-features "nix-command flakes" build \
+      --out-link /nix/var/nix/gcroots/farmos-containers/current \
+      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR\"" "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-dev\"" \
+      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-runtime\"" "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-dev-runtime\"" \
+      path:./build/nix-source#farmos-4x-dev
+    # Retain the small loaders too, so loading an unchanged image does not
+    # require rebuilding nix2container or its Skopeo transport.
+    nix --extra-experimental-features "nix-command flakes" build \
+      --out-link /nix/var/nix/gcroots/farmos-containers/loader \
+      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR\".copyToDockerDaemon" \
+      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-dev\".copyToDockerDaemon" \
+      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-runtime\".copyToDockerDaemon" \
+      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-dev-runtime\".copyToDockerDaemon" \
+      path:./build/nix-source#farmos-4x-dev.copyToDockerDaemon
+    nix-store --gc
+    nix-store --optimise
+    echo "Nix store after:"
+    du -sh /nix/store
+  '

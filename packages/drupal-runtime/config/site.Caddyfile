@@ -1,0 +1,46 @@
+	root * {$DRUPAL_ROOT:/opt/drupal}/web
+	encode zstd gzip
+
+	log {
+		output stdout
+		format console
+	}
+
+	@health path /healthz
+	respond @health "ok" 200
+
+	# PHP must never execute from uploaded files, including PATH_INFO requests.
+	@uploadedPhp path_regexp uploadedPhp (?i)^/sites/.*/files/.*\.php
+	respond @uploadedPhp 404
+
+	@hidden path_regexp hidden (^|/)\.
+	respond @hidden 404
+
+	@sensitive path /vendor/* /recipes/*
+	respond @sensitive 404
+
+	# Caddy does not read Drupal's .htaccess file. Mirror its file restrictions.
+	@metadata {
+		path_regexp metadata (?i)(^|/)(Entries[^/]*|Repository|Root|Tag|Template|composer\.(json|lock)|web\.config|yarn\.lock|package\.json|\x23[^/]*\x23)($|/)
+		# Match files on disk, not Drupal routes such as CSV /template downloads.
+		file {path}
+	}
+	respond @metadata 404
+
+	@source path_regexp source (?i)\.(engine|inc|install|make|module|po|profile|sh|[^/]*sql|theme|twig|tpl(\.php)?|xtmpl|ya?ml)(~|\.sw[op]|\.bak|\.orig|\.save)?($|/)
+	respond @source 404
+
+	@phpBackup path_regexp phpBackup (?i)\.php(~|\.sw[op]|\.bak|\.orig|\.save)($|/)
+	respond @phpBackup 404
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+	}
+
+	request_body {
+		max_size 100MB
+	}
+
+	php_server

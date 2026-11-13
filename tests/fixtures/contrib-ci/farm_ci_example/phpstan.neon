@@ -1,0 +1,6 @@
+# This fixture proves that a module can choose its own level.
+# The integration runner separately verifies farmOS's level 5 fallback.
+parameters:
+    level: 0
+    reportUnmatchedIgnoredErrors: true
+    tmpDir: /tmp/phpstan

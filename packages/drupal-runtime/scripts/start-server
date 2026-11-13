@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+# Validate before substituting environment values into Caddy configuration.
+/usr/bin/php -r 'require "/usr/share/farmos/environment.php";'
+export FARMOS_DOMAIN=${FARMOS_DOMAIN:-localhost}
+export FARMOS_CADDY_TRUSTED_PROXIES=$(printf '%s' "${FARMOS_TRUSTED_PROXIES:-}" | tr ',' ' ')
+
+config=/etc/frankenphp/Caddyfile
+case "$(printf '%s' "${FARMOS_AUTO_HTTPS:-false}" | tr '[:upper:]' '[:lower:]')" in
+    true)
+        config=/etc/frankenphp/Caddyfile.https
+        export XDG_DATA_HOME=/opt/farmos/private_files/caddy/data
+        export XDG_CONFIG_HOME=/opt/farmos/private_files/caddy/config
+        mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME"
+        ;;
+esac
+exec /usr/bin/frankenphp run --config "$config" --adapter caddyfile

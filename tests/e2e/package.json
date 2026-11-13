@@ -1,0 +1,17 @@
+{
+  "name": "farmos-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "test:core": "TEST_PHASE=core playwright test",
+    "test:smoke": "TEST_PHASE=smoke playwright test",
+    "test:install": "TEST_PHASE=install playwright test",
+    "test:persistence": "TEST_PHASE=persistence playwright test",
+    "test:contrib": "TEST_PHASE=contrib playwright test",
+    "test:contrib-persistence": "TEST_PHASE=contrib-persistence playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0"
+  }
+}

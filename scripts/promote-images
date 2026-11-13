@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Validate the complete requested image set before changing any public tag."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+import image_evidence as evidence
+import releases
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def expected_outputs(root, major=None, branch_only=False):
+    outputs = {}
+    if not branch_only:
+        rows = releases.release_matrix(releases.read_releases(root))['include']
+        if major is not None:
+            rows = [row for row in rows if row['major'] == major]
+        if not rows:
+            raise ValueError('No matching release majors')
+        for row in rows:
+            for suffix in ('', '-dev', '-runtime', '-dev-runtime'):
+                outputs['farmos-' + row['major'] + suffix] = [row['major'] + suffix]
+    if branch_only or major is None:
+        outputs['farmos-4x-dev'] = ['4.x-dev']
+    return outputs
+
+
+def run(root, *command, **kwargs):
+    return subprocess.run(command, cwd=root, check=True, **kwargs)
+
+
+def plan(root, indexes, children, outputs, destination):
+    current = evidence.checkout_identity(root)
+    repository = os.environ.get('IMAGE_REPOSITORY') or 'ghcr.io/wotnak/farmos'
+    found = {}
+    for path in indexes.rglob('identity.json'):
+        identity = json.loads(path.read_text())
+        if identity.get('output') in outputs:
+            if identity['output'] in found:
+                raise ValueError('Duplicate index evidence for ' + identity['output'])
+            found[identity['output']] = identity
+    if set(found) != set(outputs):
+        raise ValueError('Missing index evidence: ' + ', '.join(sorted(set(outputs) - set(found))))
+    promotions = []
+    for output, tags in outputs.items():
+        identity = found[output]
+        if evidence.image_parts(identity['image'])[0] != repository:
+            raise ValueError('Index belongs to a different repository')
+        for key, value in current.items():
+            if identity.get(key) != value:
+                raise ValueError('Index does not match current ' + key)
+        for key in ('GITHUB_RUN_ID', 'GITHUB_WORKFLOW_REF', 'GITHUB_SHA'):
+            if identity.get('workflow', {}).get(key) != evidence.invocation()[key]:
+                raise ValueError('Index belongs to a different workflow invocation')
+        builds = evidence.validate_children(root, children, output)
+        expected = [{'system': child['system'], 'image': child['image']} for child in builds]
+        if identity.get('children') != expected:
+            raise ValueError('Index does not match validated architecture digests')
+        workflow = 'branch-image.yaml' if output == 'farmos-4x-dev' else 'release-images.yaml'
+        signer = f"{os.environ['GITHUB_SERVER_URL']}/{os.environ['GITHUB_REPOSITORY']}/.github/workflows/{workflow}@{os.environ['GITHUB_REF']}"
+        environment = {**os.environ, 'SIGNING_IDENTITY': signer}
+        for child in builds:
+            directory = destination / output / child['system']
+            expected_path = evidence.save_identity(directory / 'expected-identity.json', child)
+            run(root, 'scripts/attest-image', 'verify', child['image'],
+                str(directory), 'architecture', str(expected_path), env=environment)
+        directory = destination / output / 'index'
+        expected_path = evidence.save_identity(directory / 'expected-identity.json', identity)
+        run(root, 'scripts/attest-image', 'verify', identity['image'],
+            str(directory), 'index', str(expected_path), env=environment)
+        # Confirm that the registry index itself has exactly the children from its evidence.
+        result = run(root, 'docker', 'buildx', 'imagetools', 'inspect', '--raw',
+                     identity['image'], capture_output=True, text=True)
+        manifest = json.loads(result.stdout)
+        actual = [(item['digest'], item.get('platform', {}).get('architecture'),
+                   item.get('platform', {}).get('os')) for item in manifest.get('manifests', [])]
+        expected_descriptors = [(child['image'].split('@')[1],
+                                 'arm64' if child['system'] == 'aarch64-linux' else 'amd64', 'linux')
+                                for child in builds]
+        if sorted(actual) != sorted(expected_descriptors):
+            raise ValueError('Registry index architecture descriptors do not match evidence')
+        promotions.append({'output': output, 'image': identity['image'], 'tags': tags})
+    return promotions
+
+
+def promote(root, promotions, destination):
+    # No public tags have changed before the complete image set passes verification.
+    revision = os.environ['SOURCE_REVISION']
+    default_branch = os.environ['DEFAULT_BRANCH']
+    if os.environ['GITHUB_REF'] != 'refs/heads/' + default_branch:
+        raise ValueError('Public tags must be published by a workflow on the default branch')
+    result = run(root, 'git', 'ls-remote', 'origin', 'refs/heads/' + default_branch,
+                 capture_output=True, text=True)
+    if result.stdout.split('\t')[0] != revision:
+        raise ValueError('The default branch advanced; rebuild before promoting tags')
+    report = {'sourceRevision': revision, 'planned': promotions, 'published': []}
+    path = destination / 'promotion.json'
+    path.write_text(json.dumps(report, indent=2) + '\n')
+    for item in promotions:
+        repository = item['image'].split('@')[0]
+        tags = [arg for tag in item['tags'] for arg in ('--tag', repository + ':' + tag)]
+        run(root, 'docker', 'buildx', 'imagetools', 'create', *tags, item['image'])
+        report['published'].append(item)
+        path.write_text(json.dumps(report, indent=2) + '\n')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root', type=Path, default=ROOT)
+    for name in ('indexes', 'children', 'destination'):
+        parser.add_argument('--' + name, type=Path, required=True)
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument('--release-major')
+    scope.add_argument('--branch-only', action='store_true')
+    args = parser.parse_args()
+    args.destination.mkdir(parents=True, exist_ok=True)
+    try:
+        outputs = expected_outputs(args.root, args.release_major, args.branch_only)
+        promotions = plan(args.root, args.indexes, args.children, outputs, args.destination)
+        promote(args.root, promotions, args.destination)
+    except (ValueError, OSError, KeyError, evidence.EvidenceError, releases.ReleaseError,
+            subprocess.CalledProcessError) as error:
+        print(f'Publication blocked: {error}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -1,0 +1,14 @@
+frankenphp
+admin off
+
+servers {
+	trusted_proxies static {$FARMOS_CADDY_TRUSTED_PROXIES:}
+	trusted_proxies_strict
+	max_header_size 32KB
+	timeouts {
+		read_header 10s
+		read_body 120s
+		write 300s
+		idle 60s
+	}
+}

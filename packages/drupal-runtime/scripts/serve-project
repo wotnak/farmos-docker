@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+# Allow CLI commands before the application has been installed.
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+fi
+
+root=${DRUPAL_ROOT:-/opt/drupal}
+
+if [ ! -f "$root/web/index.php" ] || [ ! -f "$root/vendor/autoload.php" ]; then
+    echo "Error: supply a Composer Drupal project at $root with web/index.php and vendor/autoload.php. Run composer install in a development image before starting the server." >&2
+    exit 1
+fi
+
+exec /usr/bin/farmos-http-server

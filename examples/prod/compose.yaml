@@ -1,0 +1,99 @@
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-app: &app
+  image: ghcr.io/wotnak/farmos:4
+  environment: &app-environment
+    FARMOS_DB_DRIVER: ${FARMOS_DB_DRIVER:-pgsql}
+    FARMOS_DB_HOST: ${FARMOS_DB_HOST:-db}
+    FARMOS_DB_PORT: ${FARMOS_DB_PORT:-}
+    FARMOS_DB_NAME: ${FARMOS_DB_NAME:-farmos}
+    FARMOS_DB_USER: ${FARMOS_DB_USER:-farm}
+    FARMOS_DB_PASS: ${FARMOS_DB_PASS:-}
+    FARMOS_HASH_SALT: ${FARMOS_HASH_SALT:-}
+    FARMOS_DOMAIN: ${FARMOS_DOMAIN:-localhost}
+    FARMOS_AUTO_HTTPS: ${FARMOS_AUTO_HTTPS:-false}
+    FARMOS_TRUSTED_HOSTS: ${FARMOS_TRUSTED_HOSTS:-}
+    FARMOS_TRUSTED_PROXIES: ${FARMOS_TRUSTED_PROXIES:-}
+  volumes:
+    - files:/opt/farmos/web/sites/default/files
+    - private_files:/opt/farmos/private_files
+  read_only: true
+  tmpfs:
+    - /run:size=16m,mode=1777,noexec,nosuid,nodev
+    - /tmp:size=128m,mode=1777,noexec,nosuid,nodev
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *logging
+  restart: unless-stopped
+  networks:
+    default: {}
+    frontend: {}
+
+services:
+  db:
+    image: postgres:17-alpine
+    cpus: 2
+    mem_limit: 1g
+    pids_limit: 256
+    environment:
+      POSTGRES_DB: ${FARMOS_DB_NAME:-farmos}
+      POSTGRES_USER: ${FARMOS_DB_USER:-farm}
+      POSTGRES_PASSWORD: ${FARMOS_DB_PASS:?set FARMOS_DB_PASS in .env}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    logging: *logging
+    restart: unless-stopped
+
+  farmos:
+    <<: *app
+    cpus: 2
+    mem_limit: 1g
+    pids_limit: 256
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${FARMOS_BIND_ADDRESS:-127.0.0.1}:${FARMOS_PORT:-8080}:8080"
+      - "${FARMOS_BIND_ADDRESS:-127.0.0.1}:${FARMOS_HTTPS_PORT:-8443}:8443"
+    healthcheck:
+      test: [CMD, /bin/wget, -q, -O, -, "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  cron:
+    <<: *app
+    cpus: 1
+    mem_limit: 512m
+    pids_limit: 128
+    environment:
+      <<: *app-environment
+      FARMOS_CRON_INTERVAL: ${FARMOS_CRON_INTERVAL:-900}
+    depends_on:
+      farmos:
+        condition: service_healthy
+    entrypoint: [/usr/bin/farmos-cron]
+
+volumes:
+  database:
+  files:
+  private_files:
+
+networks:
+  default:
+    internal: true
+  frontend:
+    driver: bridge

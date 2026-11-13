@@ -1,0 +1,72 @@
+import { test, expect } from '@playwright/test';
+import { login, uniqueName, createAsset, selectAutocomplete, saveEntity } from '../../support/farmos.js';
+import { createPlan, timeline, assertViewerAccess, rememberPlan } from './planning-helpers.js';
+
+const timestamp = value => Date.parse(value) / 1000;
+
+test('Grazing Plan: schedule a movement, edit grazing duration, complete it and enforce Viewer access', async ({ page, browser }) => {
+  await login(page);
+  const plan = await createPlan(page, 'grazing');
+  const animal = await createAsset(page, { type: 'animal', name: uniqueName('Grazing cow'), configure: async () => {
+    await page.locator('[name="animal_type[0][target_id]"]').fill('Cattle');
+  } });
+  const paddock = await createAsset(page, { type: 'land', name: uniqueName('Grazing paddock'), configure: async () => {
+    await page.locator('[name="land_type"][value="paddock"]').check();
+  } });
+  await page.goto(`/quick/movement?plan=${plan.id}`);
+  await selectAutocomplete(page, 'asset', animal.name);
+  await expect(page.locator('.ajax-progress')).toHaveCount(0);
+  await selectAutocomplete(page, 'location', paddock.name);
+  await expect(page.locator('.ajax-progress')).toHaveCount(0);
+  await page.locator('[name="date[date]"]').fill('2026-03-01');
+  await page.getByLabel('Completed', { exact: true }).uncheck();
+  await page.getByRole('button', { name: 'Submit', exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`${plan.path}/grazing/event\\?log=\\d+`));
+  const logId = new URL(page.url()).searchParams.get('log');
+  const logPath = `/log/${logId}`;
+  await expect(page.locator('[name="log"]')).toHaveValue(new RegExp(animal.name));
+  await page.locator('[name="start[date]"]').fill('2026-03-01');
+  await page.locator('[name="start[time]"]').fill('09:00:00');
+  await page.locator('[name="duration"]').fill('24');
+  await page.locator('[name="recovery"]').fill('168');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page).toHaveURL(plan.path);
+  await expect(page.locator('.farm-timeline').getByRole('link', { name: animal.name, exact: true })).toBeVisible();
+  const endpoint = `${plan.path}/grazing/timeline/asset`;
+  let rows = await timeline(page, endpoint);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].label).toBe(animal.name);
+  const event = rows[0].children[0];
+  expect(event.link).toContain(logPath);
+  const duration = event.tasks.find(task => task.meta.stage === 'duration');
+  const recovery = event.tasks.find(task => task.meta.stage === 'recovery');
+  expect(timestamp(duration.end) - timestamp(duration.start)).toBe(24 * 3600);
+  expect(timestamp(recovery.end) - timestamp(recovery.start)).toBe(168 * 3600);
+  expect(event.tasks.find(task => task.meta.entity_type === 'log').meta.log_status).toBe('pending');
+  const locations = await timeline(page, `${plan.path}/grazing/timeline/location`);
+  expect(locations.map(row => row.label)).toEqual([paddock.name]);
+  await page.goto(animal.path);
+  await expect(page.locator('.field--name-location').getByRole('link', { name: paddock.name, exact: true })).toHaveCount(0);
+
+  await page.goto(duration.edit_url);
+  await page.locator('[name="duration[0][value]"]').fill('48');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page).toHaveURL(plan.path);
+  rows = await timeline(page, endpoint);
+  const changed = rows[0].children[0].tasks.find(task => task.meta.stage === 'duration');
+  expect(timestamp(changed.end) - timestamp(changed.start)).toBe(48 * 3600);
+  await page.goto(`${plan.path}/grazing/event?log=${logId}`);
+  await page.locator('[name="duration"]').fill('24');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.locator('.messages--error')).toContainText('This log is already part of the plan.');
+  expect((await timeline(page, endpoint))[0].children).toHaveLength(1);
+  await page.goto(`${logPath}/edit`);
+  await page.getByLabel('Status', { exact: true }).selectOption('done');
+  await saveEntity(page, 'log');
+  await page.goto(animal.path);
+  await expect(page.locator('.field--name-location').getByRole('link', { name: paddock.name, exact: true })).toHaveAttribute('href', paddock.path);
+  rows = await timeline(page, endpoint);
+  expect(rows[0].children[0].tasks.find(task => task.meta.entity_type === 'log').meta.log_status).toBe('done');
+  await assertViewerAccess(page, browser, plan, endpoint, [`${plan.path}/grazing/event`, duration.edit_url]);
+  await rememberPlan(page, 'grazing_plan', 'grazing', plan, false);
+});
