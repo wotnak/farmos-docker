@@ -25,19 +25,19 @@ jobs:
       source-revision: ${{ steps.source.outputs.revision }}
       release-matrix: ${{ steps.releases.outputs.matrix }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
       - name: Record source revision
         id: source
         run: echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Install Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2
+        uses: go-task/setup-task@v2
         with:
           version: '3.53.1'
       - name: Test build and publishing automation
         run: task regression-test
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+      - uses: cachix/install-nix-action@v31
       - name: Resolve fresh dependencies for all releases and the development branch
         env:
           GH_TOKEN: ${{ github.token }}
@@ -47,7 +47,7 @@ jobs:
         id: releases
         run: echo "matrix=$(python3 scripts/releases.py --matrix)" >> "$GITHUB_OUTPUT"
       - name: Share resolved build inputs with all image jobs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-inputs
           path: |
@@ -98,10 +98,10 @@ jobs:
       SOURCE_REVISION: ${{ needs.prepare.outputs.source-revision }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.source-revision }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@v8
         with:
           name: build-inputs
           path: .
@@ -111,17 +111,17 @@ jobs:
           python3 scripts/image_evidence.py prepare-source
           git add -- images/source.json
       - uses: ./.github/actions/setup-image-evidence
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: image-evidence-*
           path: ${{ runner.temp }}/children
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: index-evidence-*
           path: ${{ runner.temp }}/indexes
@@ -132,7 +132,7 @@ jobs:
             --destination "$RUNNER_TEMP/promotion"
       - name: Save promotion report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v7
         with:
           name: hourly-promotion
           path: ${{ runner.temp }}/promotion/

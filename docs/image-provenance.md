@@ -12,7 +12,7 @@ This applies to production, development, runtime, development runtime, and `4.x-
 | Multi-platform index digest | Cosign signature and SLSA v1 provenance attestation referencing both child digests |
 | GitHub Actions artifacts | Image identities, predicates, Sigstore bundles, and verification results |
 
-Cosign 3.1.3 signs the images and publishes the attestations using GitHub's OIDC identity. No signing key secret is required. The installer and version are pinned in [setup-image-evidence](../.github/actions/setup-image-evidence/action.yaml).
+Cosign signs the images and publishes the attestations using GitHub's OIDC identity. No signing key secret is required. [setup-image-evidence](../.github/actions/setup-image-evidence/action.yaml) selects the installer and Cosign version used by the workflows.
 
 ## Publication sequence
 
@@ -29,7 +29,7 @@ The workflows require `packages: write` to publish and `id-token: write` to obta
 
 ## Verify an image
 
-Install Cosign 3.1.3 or a compatible version, Docker Buildx, and jq. Authenticate to GHCR if the repository is private. Set the repository, expected publishing branch, and a full index digest from your deployment or the workflow's `promotion.json` report:
+Install the configured Cosign version or a compatible version, plus Docker Buildx and jq. Authenticate to GHCR if the repository is private. Set the repository, expected publishing branch, and a full index digest from your deployment or the workflow's `promotion.json` report:
 
 ```sh
 REPOSITORY=ghcr.io/wotnak/farmos

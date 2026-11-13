@@ -48,11 +48,11 @@ jobs:
     outputs:
       artifact: ${{ inputs.build-inputs-artifact || 'build-inputs-branch' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
         if: inputs.build-inputs-artifact == ''
         with:
           ref: ${{ inputs.source-revision || github.sha }}
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
+      - uses: cachix/install-nix-action@v31
         if: inputs.build-inputs-artifact == ''
       - name: Resolve fresh build dependencies
         if: inputs.build-inputs-artifact == ''
@@ -62,7 +62,7 @@ jobs:
         run: scripts/prepare-build --branch-only
       - name: Share resolved build inputs
         if: inputs.build-inputs-artifact == ''
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-inputs-branch
           path: |
@@ -74,6 +74,7 @@ jobs:
           overwrite: true
 
   build:
+    name: Build 4.x-dev · ${{ matrix.arch }}
     needs: prepare
     strategy:
       fail-fast: false
@@ -87,11 +88,11 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source-revision || github.sha }}
       - name: Download resolved build inputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare.outputs.artifact }}
           path: .
@@ -101,13 +102,13 @@ jobs:
         run: |
           python3 scripts/image_evidence.py prepare-source
           git add -- images/source.json
-      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31
-      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569 # v7
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v7
         with:
           primary-key: nix-${{ matrix.system }}-farmos-4x-dev-${{ hashFiles('flake.nix', 'flake.lock', '.build-inputs/**', 'packages/**', 'images/**', 'versions.json', 'scripts/**', 'tests/check-runtime.php') }}
           restore-prefixes-first-match: nix-${{ matrix.system }}-farmos-4x-dev-
       - uses: ./.github/actions/setup-image-evidence
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -119,7 +120,7 @@ jobs:
             run --system "${{ matrix.system }}" .#farmos-4x-dev.copyToDockerDaemon
           IMAGE=ghcr.io/wotnak/farmos:4.x-dev DEV=1 sh tests/smoke-test.sh
       - name: Install Task
-        uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2
+        uses: go-task/setup-task@v2
         with:
           version: '3.53.1'
       - name: Run upstream farmOS PHPUnit tests
@@ -130,7 +131,7 @@ jobs:
         run: task phpunit-test-loaded
       - name: Save upstream test reports
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v7
         with:
           name: phpunit-tests-4x-dev-${{ matrix.arch }}
           path: ${{ runner.temp }}/phpunit-tests/
@@ -159,7 +160,7 @@ jobs:
           CANDIDATE_IMAGE: ${{ steps.candidate.outputs.image }}
         run: scripts/attest-image sign "$CANDIDATE_IMAGE" "$RUNNER_TEMP/image-evidence" architecture
       - name: Save architecture digests and evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-evidence-4x-dev-${{ matrix.arch }}
           path: ${{ runner.temp }}/image-evidence/
@@ -171,11 +172,11 @@ jobs:
     needs: [prepare, build]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source-revision || github.sha }}
       - name: Download resolved build inputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare.outputs.artifact }}
           path: .
@@ -186,14 +187,14 @@ jobs:
           python3 scripts/image_evidence.py prepare-source
           git add -- images/source.json
       - uses: ./.github/actions/setup-image-evidence
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Download architecture evidence
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@v8
         with:
           pattern: image-evidence-4x-dev-*
           path: ${{ runner.temp }}/children
@@ -204,7 +205,7 @@ jobs:
             "$RUNNER_TEMP/index-evidence/4x-dev"
       - name: Save index evidence
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v7
         with:
           name: index-evidence-4x-dev
           path: ${{ runner.temp }}/index-evidence/
@@ -220,11 +221,11 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source-revision || github.sha }}
       - name: Download resolved build inputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ needs.prepare.outputs.artifact }}
           path: .
@@ -235,17 +236,17 @@ jobs:
           python3 scripts/image_evidence.py prepare-source
           git add -- images/source.json
       - uses: ./.github/actions/setup-image-evidence
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: image-evidence-4x-dev*
           path: ${{ runner.temp }}/children
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: index-evidence-4x-dev*
           path: ${{ runner.temp }}/indexes
@@ -256,7 +257,7 @@ jobs:
             --destination "$RUNNER_TEMP/promotion"
       - name: Save promotion report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@v7
         with:
           name: promotion-4x-dev
           path: ${{ runner.temp }}/promotion/

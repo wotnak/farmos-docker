@@ -18,7 +18,7 @@ jobs:
           --health-cmd "pg_isready -U farm_test -d farm_test"
           --health-interval 2s --health-timeout 5s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: module
       - name: Composer, PHPCS, PHPStan and PHPUnit
@@ -96,7 +96,7 @@ jobs:
           test "$ready" = true
           php vendor/bin/phpunit -c phpunit.xml --fail-on-empty-test-suite --log-junit /artifacts/phpunit.xml "$module"
           CI
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: farmos-module-ci
