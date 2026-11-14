@@ -235,7 +235,8 @@ container repository, base tag, and selected variants. Environments can use the
 same constraint with different repositories or tags. Choose the container name
 and base tag for each environment's intended images.
 
-`hourly-images.yaml` runs at minute 17 of every hour in UTC on the default branch.
+`refresh-images.yaml` runs on pushes to `main` and once a day at 06:00 in
+`Europe/Warsaw`, following local daylight saving time, on the default branch.
 It discovers configured environments and invokes `build-images.yaml` for each
 one. The build reads the environment's current variables and resolves the latest
 farmOS version allowed by its Composer constraint and repository. Every
@@ -260,7 +261,7 @@ workflow's GitHub token; no personal access token is needed.
 
 Temporary architecture images and artifacts use the numeric environment ID to
 keep profiles separate even when their names contain spaces or punctuation.
-Manual and scheduled runs both use the current environment settings when
+Manual, push-triggered, and scheduled runs use the current environment settings when
 preparation starts. When publishing is enabled, CI captures the digests of the
 tested architecture images. After all selected variants and both
 architectures pass, it creates multi-platform manifests from those digests and
@@ -423,7 +424,7 @@ farmOS images use `/opt/farmos`.
   the generated build snapshot.
 - `scripts/nix_source.py` copies filtered source into a path flake without changing
   Git's index.
-- `.github/workflows/hourly-images.yaml` discovers configured environments.
+- `.github/workflows/refresh-images.yaml` discovers configured environments.
 - `.github/workflows/build-images.yaml` builds, tests, and publishes one
   selected environment's images and multi-platform manifests.
 - `examples/` contains standalone deployment configurations.
