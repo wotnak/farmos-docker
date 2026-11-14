@@ -347,7 +347,9 @@ def main(argv=None):
         else:
             for child in validate_children(root, args.children, args.output):
                 if args.identity_directory is not None:
-                    save_identity(args.identity_directory / (child["image"].split("@")[1] + ".json"), child)
+                    # Artifact uploads reject colons in filenames on all platforms.
+                    filename = "sha256-" + image_parts(child["image"])[1] + ".json"
+                    save_identity(args.identity_directory / filename, child)
                 print(child["image"])
     except (EvidenceError, OSError, ValueError, KeyError, TypeError, subprocess.CalledProcessError) as error:
         print(f"image-evidence: {error}", file=sys.stderr)

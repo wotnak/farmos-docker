@@ -41,7 +41,7 @@ if name == "python3":
             destination.mkdir(parents=True, exist_ok=True)
             for digit in "ab":
                 identity = json.loads((Path(os.environ["FIXTURE_DIR"]) / (digit * 64 + ".identity.json")).read_text())
-                (destination / ("sha256:" + digit * 64 + ".json")).write_text(json.dumps(identity))
+                (destination / ("sha256-" + digit * 64 + ".json")).write_text(json.dumps(identity))
                 print(identity["image"])
         elif args[1] == "index":
             destination = Path(args[args.index("--destination") + 1])
@@ -237,6 +237,23 @@ class ImagePublishingTests(unittest.TestCase):
             self.assertIn(IDENTITY, command)
             self.assertIn("https://token.actions.githubusercontent.com", command)
             self.assertRegex(command[-1], r"@sha256:[a-f0-9]{64}$")
+
+    def test_index_evidence_paths_are_uploadable_and_preserve_child_identities(self):
+        result, _, _ = self.publish()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        directory = self.base / "evidence"
+        forbidden = set('\":<>|*?\r\n')
+        for path in directory.rglob("*"):
+            relative = path.relative_to(directory)
+            for component in relative.parts:
+                self.assertFalse(set(component) & forbidden, str(relative))
+        for digit in "ab":
+            name = "sha256-" + digit * 64
+            expected = directory / "expected-children" / (name + ".json")
+            identity = json.loads(expected.read_text())
+            self.assertEqual(identity["image"], REPOSITORY + "@sha256:" + digit * 64)
+            for filename in ("verified-signature.json", "verified-provenance.json"):
+                self.assertTrue((directory / name / filename).is_file())
 
 
 if __name__ == "__main__":

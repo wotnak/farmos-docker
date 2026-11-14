@@ -233,6 +233,22 @@ class ImageEvidenceTests(unittest.TestCase):
             self.assertEqual([child["system"] for child in self.validate()],
                              ["aarch64-linux", "x86_64-linux"])
 
+    def test_cli_writes_portable_child_identity_filenames(self):
+        children = self.children()
+        destination = self.base / "expected-children"
+        result = subprocess.run([
+            sys.executable, evidence.__file__, "--root", str(self.root),
+            "validate-children", "--children", str(children), "--output", "farmos-4",
+            "--identity-directory", str(destination),
+        ], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.splitlines(), [child["image"] for child in self.identities])
+        self.assertEqual({path.name for path in destination.iterdir()},
+                         {"sha256-" + digit * 64 + ".json" for digit in "ab"})
+        for child in self.identities:
+            path = destination / ("sha256-" + evidence.image_parts(child["image"])[1] + ".json")
+            self.assertEqual(json.loads(path.read_text()), child)
+
     def test_reject_mismatched_children(self):
         self.children()
         original = copy.deepcopy(self.identities)

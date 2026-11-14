@@ -15,8 +15,11 @@ python3 scripts/image_evidence.py validate-children --children "$children" \
   --output "$output" --identity-directory "$evidence/expected-children" > "$evidence/children.txt"
 mapfile -t sources < "$evidence/children.txt"
 for image in "${sources[@]}"; do
-  scripts/attest-image verify "$image" "$evidence/${image##*@}" architecture \
-    "$evidence/expected-children/${image##*@}.json"
+  # Keep the registry digest intact; only filesystem paths need a safe separator.
+  digest=${image##*@}
+  digest_path=${digest/:/-}
+  scripts/attest-image verify "$image" "$evidence/$digest_path" architecture \
+    "$evidence/expected-children/$digest_path.json"
 done
 
 source_url=$(python3 -c 'import json; print(json.load(open("images/source.json"))["source"])')
