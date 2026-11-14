@@ -35,7 +35,7 @@ permissions:
 
 jobs:
   prepare:
-    name: Prepare ${{ inputs.environment }}
+    name: 'Prepare: ${{ inputs.environment }}'
     environment:
       name: ${{ inputs.environment }}
       deployment: false
@@ -110,7 +110,7 @@ jobs:
           overwrite: true
 
   build:
-    name: Build ${{ inputs.environment }} · ${{ matrix.variant }} · ${{ matrix.arch }}
+    name: 'Build: ${{ inputs.environment }} · ${{ matrix.variant }} · ${{ matrix.arch }}'
     needs: prepare
     environment:
       name: ${{ inputs.environment }}
@@ -207,7 +207,7 @@ jobs:
           overwrite: true
 
   publish:
-    name: Publish ${{ inputs.environment }}
+    name: 'Publish: ${{ inputs.environment }}'
     needs: [prepare, build]
     if: inputs.publish
     environment:

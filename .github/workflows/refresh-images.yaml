@@ -39,7 +39,7 @@ jobs:
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   refresh:
-    name: Build ${{ matrix.environment }}
+    name: 'Build: ${{ matrix.environment }}'
     needs: discover
     strategy:
       fail-fast: false
