@@ -315,20 +315,25 @@ image builds and publishing do not create GitHub deployment records.
 `Europe/Warsaw`, following local daylight saving time, on the default branch.
 It discovers configured environments and invokes `build-images.yaml` for each
 one. The build reads the environment's current variables and resolves the latest
-farmOS version allowed by its Composer constraint and repository. Every
-environment resolves fresh dependencies and builds independently. A development build failure does
-not prevent a valid stable build from publishing.
+farmOS version allowed by its Composer constraint and repository. Fresh inputs
+are prepared once per environment and shared across its selected variants and
+architectures. `build-images.yaml` then calls `build-variant.yaml` independently
+for each selected variant. A variant failure does not cancel other variants or
+other environments.
 
 For a manual build, open the **Build images** workflow and select one environment.
-Its variables determine the build. Disable the `publish` option to run the
-builds and tests without updating public image tags.
+Its variables determine the build. Disable the `publish` option to build and
+test images without updating public tags. Temporary architecture candidate
+images are still pushed to the registry.
 
-CI and local builds share the Task commands. CI runs `task prepare-inputs`, then
-`task load VARIANT=production PREPARED=true` and
-`task test VARIANT=production LOADED=true` for the selected variant. `CONFIGURATION=path/to/build.json` supplies an explicit profile
-to these tasks; matrix jobs use `.build-inputs/build.json` to reuse the resolved
-dependencies without preparing them again. Matrix generation and multi-platform
-publishing remain workflow-specific commands.
+CI and local builds share the Task commands. CI runs `task prepare-inputs` once
+for the environment. Each variant worker reuses those inputs; for example, a
+production worker runs `task load VARIANT=production PREPARED=true` followed by
+`task test VARIANT=production LOADED=true`. `CONFIGURATION=path/to/build.json`
+supplies an explicit profile to these tasks. Architecture jobs use the shared
+`.build-inputs/build.json` and Composer lock without preparing dependencies
+again. Matrix generation and multi-platform publishing remain workflow-specific
+commands.
 
 For GHCR, workflows use `GITHUB_TOKEN` by default and need `packages: write`.
 For another registry, set `FARMOS_IMAGE_NAME` and the environment secrets
@@ -337,11 +342,13 @@ workflow's GitHub token; no personal access token is needed.
 
 Temporary architecture images and artifacts use the numeric environment ID to
 keep profiles separate even when their names contain spaces or punctuation.
-Manual, push-triggered, and scheduled runs use the current environment settings when
-preparation starts. When publishing is enabled, CI captures the digests of the
-tested architecture images. After all selected variants and both
-architectures pass, it creates multi-platform manifests from those digests and
-updates that environment's public tags. Pin a published digest to keep a specific
+Manual, push-triggered, and scheduled runs use the current environment settings
+when preparation starts. Each variant worker builds and tests AMD64 and ARM64.
+A failure on either architecture cancels the remaining architecture job for that
+variant. When both architectures pass and publishing is enabled, the worker
+creates that variant's multi-platform manifest from the exact candidate digests
+and updates only its public tag. Other variants continue independently, so their
+tags can update at different times. Pin a published digest to keep a specific
 build as tags advance.
 
 ## Run farmOS
@@ -497,14 +504,16 @@ farmOS images use `/opt/farmos`.
 - `images/default.nix` assembles OCI images with the configured names and tags.
 - `scripts/build_config.py` validates build settings from the process environment.
 - `scripts/build_environments.py` discovers configured environments and creates
-  variant and platform build matrices.
+  selected variant matrices.
 - `scripts/prepare-build` resolves fresh Nix and Composer dependencies and writes
   the generated build snapshot.
 - `scripts/nix_source.py` copies filtered source into a path flake without changing
   Git's index.
 - `.github/workflows/refresh-images.yaml` discovers configured environments.
-- `.github/workflows/build-images.yaml` builds, tests, and publishes one
-  selected environment's images and multi-platform manifests.
+- `.github/workflows/build-images.yaml` prepares one environment's shared inputs
+  and dispatches its selected variants independently.
+- `.github/workflows/build-variant.yaml` builds and tests both architectures for
+  one variant, then publishes that variant's multi-platform manifest and tag.
 - `examples/` contains standalone deployment configurations.
 - `tests/compose.yaml` defines the shared disposable services and suite profiles.
 - `tests/` contains image checks and application acceptance suites invoked by Task.

@@ -80,17 +80,12 @@ def discover(pages):
     return {"include": _environment_rows(rows)}
 
 
-def build_matrix(configuration):
+def variant_matrix(configuration):
     profile = build_config.normalize(configuration)
-    images = build_config.tags(profile)
-    platforms = [("ubuntu-24.04", "x86_64-linux", "amd64"),
-                 ("ubuntu-24.04-arm", "aarch64-linux", "arm64")]
     return {"include": [
         {"variant": variant, "output": build_config.VARIANTS[variant]["output"],
-         "suite": "runtime" if variant in {"runtime", "development-runtime"} else "smoke",
-         "tag": profile["image-tag"] + build_config.VARIANTS[variant]["suffix"],
-         "image": images[variant], "runner": runner, "system": system, "arch": architecture}
-        for variant in profile["variants"] for runner, system, architecture in platforms
+         "suite": "runtime" if variant in {"runtime", "development-runtime"} else "smoke"}
+        for variant in profile["variants"]
     ]}
 
 
@@ -99,8 +94,8 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("discover", help="Validate paginated GitHub Environments JSON from stdin")
     commands.add_parser("select", help="Read and validate the environment build profile")
-    build_parser = commands.add_parser("build-matrix", help="Select variants and Linux platforms")
-    build_parser.add_argument("--configuration", type=Path, required=True)
+    variant_parser = commands.add_parser("variant-matrix", help="Select independent variant flows")
+    variant_parser.add_argument("--configuration", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         if args.command == "discover":
@@ -111,7 +106,7 @@ def main(argv=None):
             if args.configuration.is_symlink() or not args.configuration.is_file():
                 raise EnvironmentError("Build configuration must be a regular file")
             configuration = load_json(args.configuration.read_text())
-            result = build_matrix(configuration)
+            result = variant_matrix(configuration)
         print(json.dumps(result, ensure_ascii=True, separators=(",", ":")))
     except (EnvironmentError, build_config.ConfigurationError, OSError, ValueError) as error:
         print(f"Build environment configuration failed: {error}", file=sys.stderr)

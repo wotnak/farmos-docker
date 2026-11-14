@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish configured multi-platform tags from tested architecture digests."""
+"""Publish one configured multi-platform tag from tested architecture digests."""
 
 import argparse
 import json
@@ -14,34 +14,31 @@ ROOT = Path(__file__).resolve().parents[1]
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
 
-def publication(configuration, directory):
+def publication(configuration, directory, variant):
     profile = build_config.normalize(configuration)
-    commands = []
-    # Read every required digest before changing any public tag.
-    for variant, image in build_config.tags(profile).items():
-        output = build_config.VARIANTS[variant]["output"]
-        sources = []
-        for architecture in ("amd64", "arm64"):
-            digest = (directory / f"{output}-{architecture}.txt").read_text().strip()
-            if not DIGEST.fullmatch(digest):
-                raise ValueError(f"Invalid digest for {output}/{architecture}")
-            sources.append(profile["image-name"] + "@" + digest)
-        commands.append(["docker", "buildx", "imagetools", "create", "--tag", image, *sources])
-    return commands
-
-
-def publish(root, commands):
-    for command in commands:
-        subprocess.run(command, cwd=root, check=True)
+    if variant not in profile["variants"]:
+        raise ValueError("Variant is not enabled by FARMOS_IMAGE_VARIANTS: " + variant)
+    image = build_config.tags(profile)[variant]
+    output = build_config.VARIANTS[variant]["output"]
+    sources = []
+    # Both architecture digests must be present before changing this tag.
+    for architecture in ("amd64", "arm64"):
+        digest = (directory / f"{output}-{architecture}.txt").read_text().strip()
+        if not DIGEST.fullmatch(digest):
+            raise ValueError(f"Invalid digest for {output}/{architecture}")
+        sources.append(profile["image-name"] + "@" + digest)
+    return ["docker", "buildx", "imagetools", "create", "--tag", image, *sources]
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--configuration", type=Path, default=ROOT / ".build-inputs/build.json")
     parser.add_argument("--digests", type=Path, required=True)
+    parser.add_argument("--variant", choices=tuple(build_config.VARIANTS), required=True)
     args = parser.parse_args()
     try:
-        publish(ROOT, publication(json.loads(args.configuration.read_text()), args.digests))
+        command = publication(json.loads(args.configuration.read_text()), args.digests, args.variant)
+        subprocess.run(command, cwd=ROOT, check=True)
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
         print(f"Publication failed: {error}", file=sys.stderr)
         return 1

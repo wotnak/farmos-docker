@@ -1,0 +1,172 @@
+name: Build variant
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      environment-id:
+        type: string
+        required: true
+      artifact:
+        description: Shared prepared build inputs
+        type: string
+        required: true
+      image-name:
+        type: string
+        required: true
+      registry:
+        type: string
+        required: true
+      variant:
+        type: string
+        required: true
+      output:
+        type: string
+        required: true
+      suite:
+        type: string
+        required: true
+      publish:
+        description: Publish this variant after both architectures pass
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+jobs:
+  build:
+    name: 'Build: ${{ inputs.environment }} · ${{ inputs.variant }} · ${{ matrix.arch }}'
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    env:
+      CONFIGURATION: .build-inputs/build.json
+      BUILD_ENVIRONMENT_ID: ${{ inputs.environment-id }}
+      IMAGE_REPOSITORY: ${{ inputs.image-name }}
+      IMAGE_OUTPUT: ${{ inputs.output }}
+      IMAGE_VARIANT: ${{ inputs.variant }}
+      NIX_SYSTEM: ${{ matrix.system }}
+      IMAGE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download resolved build inputs
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact }}
+          path: .
+      - uses: cachix/install-nix-action@v31
+      - uses: go-task/setup-task@v2
+        with:
+          version: '3.53.1'
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ matrix.system }}-env-${{ inputs.environment-id }}-${{ inputs.output }}-${{ hashFiles('flake.nix', 'flake.lock', '.build-inputs/**', 'packages/**', 'images/**', 'scripts/**', 'tests/check-runtime.php') }}
+          restore-prefixes-first-match: nix-${{ matrix.system }}-env-${{ inputs.environment-id }}-${{ inputs.output }}-
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+      - name: Build and load image
+        run: task load VARIANT="$IMAGE_VARIANT" PREPARED=true
+      - name: Test image runtime
+        run: task test VARIANT="$IMAGE_VARIANT" SUITE="${{ inputs.suite }}" LOADED=true
+      - name: Test database settings and connections
+        if: inputs.variant == 'production'
+        timeout-minutes: 10
+        run: task test VARIANT=production SUITE=database LOADED=true
+      - name: Test farmOS installation, core workflows and persistence
+        if: inputs.variant == 'production'
+        timeout-minutes: 30
+        env:
+          TEST_ARTIFACTS: ${{ runner.temp }}/acceptance-tests
+        run: task test VARIANT=production SUITE=e2e LOADED=true
+      - name: Run upstream farmOS PHPUnit tests
+        if: inputs.variant == 'development'
+        timeout-minutes: 60
+        env:
+          TEST_ARTIFACTS: ${{ runner.temp }}/phpunit-tests
+        run: task test VARIANT=development SUITE=phpunit LOADED=true
+      - name: Verify contributed module CI commands
+        if: inputs.variant == 'development'
+        timeout-minutes: 30
+        env:
+          TEST_ARTIFACTS: ${{ runner.temp }}/contrib-ci-tests
+        run: task test VARIANT=development SUITE=contrib-ci LOADED=true
+      - name: Save application test reports
+        if: always() && (inputs.variant == 'production' || inputs.variant == 'development')
+        uses: actions/upload-artifact@v7
+        with:
+          name: application-tests-env-${{ inputs.environment-id }}-${{ inputs.output }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/acceptance-tests/
+            ${{ runner.temp }}/phpunit-tests/
+            ${{ runner.temp }}/contrib-ci-tests/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+      - name: Push tested architecture image
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          candidate="build-${BUILD_ENVIRONMENT_ID}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${IMAGE_OUTPUT}-${IMAGE_ARCH}"
+          nix --extra-experimental-features "nix-command flakes" \
+            run --system "$NIX_SYSTEM" "path:./build/nix-source#\"$IMAGE_OUTPUT\".copyTo" -- \
+            --format oci --digestfile "$RUNNER_TEMP/digests/${IMAGE_OUTPUT}-${IMAGE_ARCH}.txt" \
+            "docker://${IMAGE_REPOSITORY}:${candidate}"
+      - name: Share architecture digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-digest-env-${{ inputs.environment-id }}-${{ inputs.output }}--${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    name: 'Publish: ${{ inputs.environment }} · ${{ inputs.variant }}'
+    needs: build
+    if: inputs.publish
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact }}
+          path: .
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ inputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+      - name: Download architecture digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: image-digest-env-${{ inputs.environment-id }}-${{ inputs.output }}--*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - name: Publish multi-platform tags
+        env:
+          IMAGE_VARIANT: ${{ inputs.variant }}
+        run: python3 scripts/publish-images --variant "$IMAGE_VARIANT" --digests "$RUNNER_TEMP/digests"
