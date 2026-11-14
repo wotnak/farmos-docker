@@ -10,9 +10,14 @@ for (const module of selectedModules()) {
     const records = JSON.parse(fs.readFileSync(file, 'utf8'));
     expect(records.length).toBeGreaterThan(0);
     await login(page);
+    const checkedPages = new Set();
     for (const record of records) {
-      expect((await page.goto(record.path)).status()).toBe(200);
-      await expect(page.getByRole('heading', { name: record.name, exact: true })).toBeVisible();
+      const pageIdentity = JSON.stringify([record.path, record.name]);
+      if (!checkedPages.has(pageIdentity)) {
+        expect((await page.goto(record.path)).status()).toBe(200);
+        await expect(page.getByRole('heading', { name: record.name, exact: true })).toBeVisible();
+        checkedPages.add(pageIdentity);
+      }
       if (record.apiPath) {
         const response = await page.request.get(record.apiPath);
         expect(response.status()).toBe(200);

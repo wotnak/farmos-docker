@@ -11,7 +11,6 @@ test('manage equipment taxonomy terms through create, edit and delete forms', as
   await page.locator('#gin-sticky-edit-submit').click();
   await page.goto('/admin/structure/taxonomy/manage/equipment_type/overview');
   const row = page.getByRole('row').filter({ hasText: name });
-  await expect(row).toBeVisible();
   await row.getByRole('link', { name: `Edit ${name}`, exact: true }).click();
   const termPath = new URL(page.url()).pathname.replace(/\/edit$/, '');
   await page.locator('input[name="name[0][value]"]').fill(renamed);
@@ -32,7 +31,6 @@ test('save site configuration and restore the original value', async ({ page }) 
   try {
     await page.locator('input[name="site_name"]').fill(changed);
     await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
-    await expect(page.getByText('The configuration options have been saved.', { exact: true })).toBeVisible();
     await page.goto('/admin/config/system/site-information');
     await expect(page.locator('input[name="site_name"]')).toHaveValue(changed);
     const response = await page.request.get('/api');

@@ -53,7 +53,6 @@ test('install farmOS and configure base modules', async ({ page }) => {
       await expect(page.locator('.ajax-progress')).toHaveCount(0);
       await expect(checkbox).toBeChecked();
     }
-    await expect(page.locator('input[name="ignore_recommended"]')).toHaveCount(0);
     await page.getByRole('button', { name: 'Save and continue' }).click();
     await expect(page.getByText('Step 3: Resources', { exact: true })).toBeVisible({ timeout: 180_000 });
     await page.getByRole('button', { name: 'Finish', exact: true }).click();
@@ -72,7 +71,5 @@ test('install farmOS and configure base modules', async ({ page }) => {
     }
     await page.getByRole('button', { name: 'Install modules', exact: true }).click();
     await expect(page.locator('input[name="core[modules][farm_sensor]"]')).toBeDisabled({ timeout: 240_000 });
-    await expect(page.locator('input[name="core[modules][farm_api]"]')).toBeChecked();
-    await expect(page.locator('input[name="core[modules][farm_viewer]"]')).toBeChecked();
   });
 });

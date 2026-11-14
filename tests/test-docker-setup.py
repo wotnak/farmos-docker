@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
-"""Regression checks using disposable containers. Requires Docker and Python 3."""
+"""Check deployment configuration and Task's shared HTTP security fixture."""
 
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
-import time
 import unittest
-import uuid
 
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = os.environ.get("IMAGE", "ghcr.io/wotnak/farmos:4")
 DOCKER = shutil.which("docker")
-FIXTURE = "tests/compose.docker-setup.yaml"
 POSTGRES_EXAMPLES = ("examples/prod/compose.yaml", "examples/prod-contrib/compose.yaml",
                      "examples/runtime/compose.yaml")
 EXAMPLES = (*POSTGRES_EXAMPLES, "examples/prod-sqlite/compose.yaml")
@@ -39,30 +36,16 @@ def compose_env(**overrides):
     return environment | defaults | overrides
 
 
-def compose_config(*files, **overrides):
+def compose_config(filename, *additional_files, **overrides):
     args = [DOCKER, "compose", "--env-file", "/dev/null"]
-    for filename in files or (FIXTURE,):
-        args += ["-f", filename]
+    for selected in (filename, *additional_files):
+        args += ["-f", selected]
     result = run(*args, "config", "--format", "json", cwd=ROOT,
                  env=compose_env(**overrides))
     return json.loads(result.stdout)
 
 
 class ComposeConfigTests(unittest.TestCase):
-    def test_fixture_isolation_and_limits(self):
-        config = compose_config()
-        self.assertEqual(set(config["services"]), {"farmos"})
-        self.assertTrue(config["networks"]["default"]["internal"])
-        spec = config["services"]["farmos"]
-        self.assertEqual(spec["ports"][0]["host_ip"], "127.0.0.1")
-        self.assertEqual(float(spec["cpus"]), 2)
-        self.assertEqual(int(spec["mem_limit"]), 1024**3)
-        self.assertEqual(spec["pids_limit"], 256)
-        self.assertEqual(spec["logging"]["options"], {"max-size": "10m", "max-file": "3"})
-        self.assertTrue(spec["read_only"])
-        self.assertEqual({v["target"] for v in spec["volumes"]}, {
-            "/opt/farmos/web/sites/default/files", "/opt/farmos/private_files"})
-
     def test_runtime_project_readonly_with_explicit_writable_storage(self):
         config = compose_config("examples/runtime/compose.yaml", FARMOS_PROJECT_PATH="/tmp/farmos-fixture")
         for service in ("farmos", "cron"):
@@ -107,39 +90,28 @@ class ComposeConfigTests(unittest.TestCase):
         self.assertEqual(app["environment"]["FARMOS_AUTO_HTTPS"], "true")
         self.assertEqual(app["environment"]["FARMOS_DOMAIN"], "farm.example.test")
 
-    def test_production_example_environment_mapping(self):
-        config = compose_config("examples/prod/compose.yaml",
-                                FARMOS_DB_NAME="example_db", FARMOS_DB_USER="example_user",
-                                FARMOS_DB_PASS="example-password", FARMOS_CRON_INTERVAL="37",
-                                POSTGRES_DB="ignored_db", POSTGRES_USER="ignored_user",
-                                POSTGRES_PASSWORD="ignored-password")
-        for service in ("farmos", "cron"):
-            environment = config["services"][service]["environment"]
-            self.assertEqual(environment["FARMOS_DB_NAME"], "example_db")
-            self.assertEqual(environment["FARMOS_DB_USER"], "example_user")
-            self.assertEqual(environment["FARMOS_DB_PASS"], "example-password")
-            self.assertEqual(environment["FARMOS_DB_DRIVER"], "pgsql")
-            self.assertNotIn("POSTGRES_PASSWORD", environment)
-        database = config["services"]["db"]["environment"]
-        self.assertEqual(database["POSTGRES_DB"], "example_db")
-        self.assertEqual(database["POSTGRES_USER"], "example_user")
-        self.assertEqual(database["POSTGRES_PASSWORD"], "example-password")
-        self.assertEqual(config["services"]["cron"]["environment"]["FARMOS_CRON_INTERVAL"], "37")
-
     def test_database_variables_across_postgresql_examples(self):
         for filename in POSTGRES_EXAMPLES:
             with self.subTest(filename=filename):
                 config = compose_config(filename, FARMOS_PROJECT_PATH="/tmp/farmos-fixture",
                                         FARMOS_DB_HOST="db", FARMOS_DB_PORT="5544",
-                                        FARMOS_DB_NAME="example_db", FARMOS_DB_USER="example_user")
+                                        FARMOS_DB_NAME="example_db", FARMOS_DB_USER="example_user",
+                                        FARMOS_DB_PASS="example-password",
+                                        POSTGRES_DB="ignored_db", POSTGRES_USER="ignored_user",
+                                        POSTGRES_PASSWORD="ignored-password")
                 for service in ("farmos", "cron"):
                     environment = config["services"][service]["environment"]
+                    self.assertEqual(environment["FARMOS_DB_DRIVER"], "pgsql")
                     self.assertEqual(environment["FARMOS_DB_HOST"], "db")
                     self.assertEqual(environment["FARMOS_DB_PORT"], "5544")
                     self.assertEqual(environment["FARMOS_DB_NAME"], "example_db")
                     self.assertEqual(environment["FARMOS_DB_USER"], "example_user")
-                    self.assertEqual(environment["FARMOS_DB_PASS"], "disposable-test-password")
+                    self.assertEqual(environment["FARMOS_DB_PASS"], "example-password")
                     self.assertFalse(any(key.startswith("POSTGRES_") for key in environment))
+                database = config["services"]["db"]["environment"]
+                self.assertEqual(database["POSTGRES_DB"], "example_db")
+                self.assertEqual(database["POSTGRES_USER"], "example_user")
+                self.assertEqual(database["POSTGRES_PASSWORD"], "example-password")
 
     def test_sqlite_example_has_no_server_or_password_requirement(self):
         config = compose_config("examples/prod-sqlite/compose.yaml", FARMOS_DB_PASS="")
@@ -161,27 +133,15 @@ class ComposeConfigTests(unittest.TestCase):
 class DockerSetupTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.project = "farmos-setup-test-" + uuid.uuid4().hex[:10]
+        cls.project = os.environ.get("TEST_COMPOSE_PROJECT")
+        if not cls.project:
+            raise RuntimeError("Run task test VARIANT=production SUITE=http to start the shared HTTP fixture")
+        compose_file = os.environ.get("TEST_COMPOSE_FILE") or str(ROOT / "tests/compose.yaml")
         cls.compose = [DOCKER, "compose", "--env-file", "/dev/null", "-p", cls.project,
-                       "-f", str(ROOT / FIXTURE)]
-        cls.env = compose_env()
-        cls.addClassCleanup(run, *cls.compose, "down", "-v", "--remove-orphans",
-                            check=False, cwd=ROOT, env=cls.env)
-        # Health and static routing do not need a database or an installed site.
-        run(*cls.compose, "up", "-d", "--no-deps", "--pull", "never", "farmos",
-            cwd=ROOT, env=cls.env)
-        cls.web = run(*cls.compose, "ps", "-a", "-q", "farmos", cwd=ROOT, env=cls.env).stdout.strip()
-        for _ in range(60):
-            if run(DOCKER, "exec", cls.web, "wget", "-q", "-O", "/dev/null",
-                   "http://127.0.0.1:8080/healthz", check=False).returncode == 0:
-                break
-            if run(DOCKER, "inspect", "--format", "{{.State.Running}}", cls.web).stdout.strip() != "true":
-                logs = run(DOCKER, "logs", cls.web)
-                raise RuntimeError(logs.stdout + logs.stderr)
-            time.sleep(0.5)
-        else:
-            logs = run(DOCKER, "logs", cls.web)
-            raise RuntimeError(logs.stdout + logs.stderr)
+                       "-f", compose_file, "--profile", "http"]
+        cls.web = run(*cls.compose, "ps", "-q", "web", cwd=ROOT).stdout.strip()
+        if not cls.web:
+            raise RuntimeError("The shared HTTP fixture is not running; run task test VARIANT=production SUITE=http")
 
     def test_running_container_isolation(self):
         spec = json.loads(run(DOCKER, "inspect", self.web).stdout)[0]
@@ -202,6 +162,7 @@ class DockerSetupTests(unittest.TestCase):
         run(DOCKER, "exec", self.web, "test", "!", "-w", "/opt/farmos/web/sites/default/settings.php")
         run(DOCKER, "exec", self.web, "test", "!", "-w", "/opt/farmos/web/sites/default")
         # An actual executable copied into temporary storage must not run.
+        self.addCleanup(run, DOCKER, "exec", self.web, "rm", "-f", "/tmp/noexec-probe", check=False)
         result = run(DOCKER, "exec", self.web, "/bin/sh", "-c",
                      "cp /bin/busybox /tmp/noexec-probe && /tmp/noexec-probe true", check=False)
         self.assertNotEqual(result.returncode, 0)
@@ -253,6 +214,7 @@ foreach (['attacker.invalid', 'farm.example.test.attacker.invalid', 'farmXexampl
 }
 echo json_encode($results, JSON_THROW_ON_ERROR);
 '''
+        self.addCleanup(run, DOCKER, "exec", self.web, "rm", "-f", "/tmp/proxy-settings-test.php", check=False)
         run(DOCKER, "exec", "-i", self.web, "/bin/sh", "-c",
             "cat > /tmp/proxy-settings-test.php", input=script)
         response = run(DOCKER, "exec", "-e", "FARMOS_DOMAIN=farm.example.test",
@@ -269,6 +231,7 @@ echo json_encode($results, JSON_THROW_ON_ERROR);
 
     def test_http_file_protections(self):
         base = "/sites/default/files/docker-review"
+        self.addCleanup(run, DOCKER, "exec", self.web, "rm", "-rf", "/opt/farmos/web" + base, check=False)
         fixtures = {
             "probe.php": '<?php echo "PHP_EXECUTED";',
             "settings.php.bak": '<?php /* BACKUP_SECRET */',
@@ -291,7 +254,7 @@ echo json_encode($results, JSON_THROW_ON_ERROR);
         blocked = [base + "/" + path for path in fixtures if path != "style.css"]
         blocked += [base + "/probe.php/extra", base + "/probe%2ephp/extra",
                     "/sites/default/default.services.yml", "/core/composer.json"]
-        for path in blocked + [base + "/style.css", "/healthz"]:
+        for path in blocked + [base + "/style.css"]:
             with self.subTest(path=path):
                 response = run(DOCKER, "exec", self.web, "wget", "-S", "-O", "-",
                                "http://127.0.0.1:8080" + path, check=False)

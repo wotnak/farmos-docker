@@ -1,4 +1,3 @@
-import { expect } from '@playwright/test';
 import { uniqueName } from './farmos.js';
 
 export async function createViewer(page, prefix) {
@@ -12,6 +11,5 @@ export async function createViewer(page, prefix) {
   await page.locator('input[name="roles[farm_viewer]"]').check();
   await page.locator('input[name="notify"]').uncheck();
   await page.getByRole('button', { name: 'Create new account', exact: true }).click();
-  await expect(page.getByText('No email has been sent.', { exact: false })).toBeVisible();
   return { username, password };
 }

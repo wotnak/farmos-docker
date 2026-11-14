@@ -1,0 +1,200 @@
+# Shared disposable integration stack. Task starts only the services a suite needs.
+x-healthcheck: &healthcheck
+  test: [CMD, /bin/wget, -q, -O, -, 'http://127.0.0.1:8080/healthz']
+  interval: 2s
+  timeout: 5s
+  retries: 30
+
+x-production: &production
+  pull_policy: never
+  read_only: true
+  cpus: 2
+  mem_limit: 1g
+  pids_limit: 256
+  tmpfs:
+    - /run:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
+  security_opt: ['no-new-privileges:true']
+  cap_drop: [ALL]
+  ports: ['127.0.0.1::8080']
+  healthcheck: *healthcheck
+  logging:
+    driver: json-file
+    options: {max-size: 10m, max-file: '3'}
+
+x-database-settings: &database-settings
+  FARMOS_DB_HOST: db
+  FARMOS_DB_NAME: farmos
+  FARMOS_DB_USER: farm
+  FARMOS_DB_PASS: disposable-password
+  FARMOS_TRUSTED_HOSTS: farmos,farmos-contrib,localhost,127.0.0.1
+  FARMOS_DOMAIN: farmos
+  FARMOS_AUTO_HTTPS: 'false'
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: farmos
+      POSTGRES_USER: farm
+      POSTGRES_PASSWORD: disposable-password
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    volumes: [database:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U farm -d farmos]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  farmos:
+    <<: *production
+    profiles: [e2e]
+    image: ${IMAGE:-ghcr.io/wotnak/farmos:4}
+    environment: *database-settings
+    depends_on:
+      db: {condition: service_healthy}
+    volumes:
+      - files:/opt/farmos/web/sites/default/files
+      - private_files:/opt/farmos/private_files
+
+  web:
+    <<: *production
+    profiles: [http]
+    image: ${IMAGE:-ghcr.io/wotnak/farmos:4}
+    environment:
+      FARMOS_DB_PASS: disposable-password
+      FARMOS_HASH_SALT: ${FARMOS_HASH_SALT:-disposable-test-salt-with-at-least-32-characters}
+      FARMOS_DOMAIN: localhost
+    volumes:
+      - web_files:/opt/farmos/web/sites/default/files
+      - web_private_files:/opt/farmos/private_files
+
+  phpunit:
+    profiles: [phpunit]
+    image: ${IMAGE:-ghcr.io/wotnak/farmos:4-dev}
+    pull_policy: never
+    networks: [default, egress]
+    depends_on:
+      db: {condition: service_healthy}
+      chrome: {condition: service_healthy}
+    environment:
+      XDEBUG_MODE: 'off'
+      SIMPLETEST_BASE_URL: http://phpunit:8080
+      SIMPLETEST_DB: pgsql://farm:disposable-password@db/farmos
+      MINK_DRIVER_ARGS_WEBDRIVER: '["chrome", {"goog:chromeOptions": {"w3c": true, "args": ["--headless", "--no-sandbox", "--disable-dev-shm-usage"]}}, "http://chrome:4444/wd/hub"]'
+      BROWSERTEST_OUTPUT_DIRECTORY: /tmp/phpunit/browser-output
+    volumes:
+      - phpunit_sites:/opt/farmos/web/sites
+      - phpunit_private_files:/opt/farmos/private_files
+    healthcheck: *healthcheck
+
+  chrome:
+    profiles: [phpunit]
+    image: ${SELENIUM_IMAGE:-selenium/standalone-chromium:4.35.0-20250828@sha256:f824da40851c285a547cffe88e87ec4b0e7fdc996a25f678bbb03ee76d7a7467}
+    shm_size: 2gb
+    networks: [default, egress]
+    environment: {SE_NODE_MAX_SESSIONS: 1}
+    healthcheck:
+      test: [CMD-SHELL, 'curl --fail --silent http://localhost:4444/status | grep -q ''"ready": true''']
+      interval: 2s
+      timeout: 5s
+      retries: 60
+
+  ci:
+    profiles: [contrib-ci]
+    image: ${IMAGE:-ghcr.io/wotnak/farmos:4-dev}
+    pull_policy: never
+    user: '0:0'
+    depends_on:
+      db: {condition: service_healthy}
+    networks: [default, egress]
+    environment:
+      XDEBUG_MODE: 'off'
+      COMPOSER_ALLOW_SUPERUSER: '1'
+      SIMPLETEST_DB: pgsql://farm:disposable-password@db/farmos
+      SIMPLETEST_BASE_URL: http://127.0.0.1:8080
+      BROWSERTEST_OUTPUT_DIRECTORY: /artifacts/positive/browser-output
+    volumes:
+      - ./fixtures/contrib-ci/farm_ci_example:/checkout:ro
+      - ${TEST_ARTIFACTS:-../build/tests/current}:/artifacts
+    healthcheck: *healthcheck
+
+  farmos-contrib:
+    <<: *production
+    profiles: [contrib]
+    image: ${RUNTIME_IMAGE:-ghcr.io/wotnak/farmos:4-runtime}
+    environment: *database-settings
+    depends_on:
+      db: {condition: service_healthy}
+      contrib-storage: {condition: service_completed_successfully}
+    volumes:
+      - type: bind
+        source: ${FARMOS_PROJECT_PATH:-../build/tests/contrib/project}
+        target: /opt/farmos
+        read_only: true
+        bind: {create_host_path: false}
+      - contrib_files:/opt/farmos/web/sites/default/files
+      - contrib_private_files:/opt/farmos/private_files
+
+  contrib-storage:
+    profiles: [contrib]
+    image: ${RUNTIME_IMAGE:-ghcr.io/wotnak/farmos:4-runtime}
+    pull_policy: never
+    user: '0:0'
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - chown 65532:65532 /files /private; mkdir -p /private/files /private/keys; chown 65532:65532 /private/files /private/keys
+    network_mode: none
+    volumes: [contrib_files:/files, contrib_private_files:/private]
+
+  contrib-prepare:
+    profiles: [tools]
+    image: ${DEV_RUNTIME_IMAGE:-ghcr.io/wotnak/farmos:4-dev-runtime}
+    pull_policy: never
+    user: '${LOCAL_UID:-65532}:${LOCAL_GID:-65532}'
+    networks: [egress]
+    entrypoint: [composer]
+    environment:
+      COMPOSER_HOME: /tmp/composer
+      COMPOSER_CACHE_DIR: /cache
+      XDEBUG_MODE: 'off'
+    volumes:
+      - ${FARMOS_PROJECT_PATH:-../build/tests/contrib/project}:/opt/farmos
+      - ${COMPOSER_CACHE_PATH:-../build/tests/contrib/composer-cache}:/cache
+
+  playwright:
+    profiles: [tools]
+    image: mcr.microsoft.com/playwright:v1.63.0-noble
+    working_dir: /tests
+    command: [npx, --no-install, playwright, test]
+    networks: [default, egress]
+    init: true
+    ipc: private
+    shm_size: 1gb
+    environment:
+      BASE_URL: ${BASE_URL:-http://farmos:8080}
+      FARMOS_DB_PRECONFIGURED: '1'
+      FARMOS_OAUTH_KEY_DIR: /opt/farmos/private_files/keys
+      CONTRIB_MODULES: ${CONTRIB_MODULES:-}
+      TEST_ARTIFACTS: /artifacts
+    volumes:
+      - ./e2e:/tests:ro
+      - playwright_node_modules:/tests/node_modules
+      - ${TEST_ARTIFACTS:-../build/tests/current}:/artifacts
+
+volumes:
+  database:
+  files:
+  private_files:
+  web_files:
+  web_private_files:
+  phpunit_sites:
+  phpunit_private_files:
+  contrib_files:
+  contrib_private_files:
+  playwright_node_modules:
+
+networks:
+  default:
+    internal: true
+  egress:

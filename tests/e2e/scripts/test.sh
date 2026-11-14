@@ -1,34 +1,18 @@
 #!/usr/bin/env bash
-# Test the loaded production image. Every run gets fresh, isolated volumes.
+# Run production acceptance phases in the disposable stack created by Task.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-export IMAGE=${IMAGE:-ghcr.io/wotnak/farmos:4}
-artifact_root=${TEST_ARTIFACTS:-$root/artifacts/core}
-mkdir -p "$artifact_root"
-artifact_root=$(cd "$artifact_root" && pwd)
-export TEST_ARTIFACTS
-TEST_ARTIFACTS=$(mktemp -d "$artifact_root/run-XXXXXXXX")
-project="farmos-e2e-$(basename "$TEST_ARTIFACTS" | tr '[:upper:]' '[:lower:]')-$$"
-compose=(docker compose --env-file /dev/null -p "$project" -f "$root/compose.yaml")
+: "${TEST_COMPOSE_PROJECT:?Run this phase through Task}"
+: "${TEST_COMPOSE_FILE:?Task must supply the shared Compose file}"
+: "${TEST_ARTIFACTS:?Task must supply the artifact directory}"
+: "${TEST_SUITE:?Task must select the Compose profile}"
+: "${TEST_SERVICE:?Task must select the application service}"
+: "${BASE_URL:?Task must supply the application URL}"
+compose=(docker compose --env-file /dev/null -p "$TEST_COMPOSE_PROJECT" -f "$TEST_COMPOSE_FILE" --profile "$TEST_SUITE")
 
-cleanup() {
-  status=$?
-  trap - EXIT
-  "${compose[@]}" logs --no-color >"$TEST_ARTIFACTS/compose.log" 2>&1 || true
-  "${compose[@]}" ps --all >"$TEST_ARTIFACTS/containers.txt" 2>&1 || true
-  "${compose[@]}" --profile test down --volumes --remove-orphans >"$TEST_ARTIFACTS/cleanup.log" 2>&1 || {
-    cat "$TEST_ARTIFACTS/cleanup.log" >&2
-    status=1
-  }
-  printf 'Acceptance test artifacts: %s\n' "$TEST_ARTIFACTS"
-  exit "$status"
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 check_storage() {
-  "${compose[@]}" exec -T farmos /usr/bin/php -r '
+  "${compose[@]}" exec -T "$TEST_SERVICE" /usr/bin/php -r '
     $settings = "/opt/farmos/web/sites/default/settings.php";
     foreach ([$settings, dirname($settings)] as $path) {
       if (!file_exists($path) || is_writable($path)) {
@@ -49,29 +33,26 @@ check_storage() {
   '
 }
 
-printf '%s\n' "$project" >"$TEST_ARTIFACTS/project.txt"
-"${compose[@]}" --profile test config >"$TEST_ARTIFACTS/compose.yaml"
-docker image inspect "$IMAGE" >"$TEST_ARTIFACTS/image.json"
+printf '%s\n' "$TEST_COMPOSE_PROJECT" >"$TEST_ARTIFACTS/project.txt"
 # Docker needs the nested volume mount point to exist inside the read-only bind.
 mkdir -p "$root/node_modules"
 "${compose[@]}" run --rm --no-deps playwright npm ci --ignore-scripts --no-audit --no-fund \
   2>&1 | tee "$TEST_ARTIFACTS/dependencies.log"
-"${compose[@]}" up -d --wait --wait-timeout 120 farmos
 check_storage | tee "$TEST_ARTIFACTS/storage-before.log"
 "${compose[@]}" run --rm --no-deps -e TEST_PHASE=install playwright
 "${compose[@]}" run --rm --no-deps -e TEST_PHASE=core playwright
 "${compose[@]}" logs --no-color >"$TEST_ARTIFACTS/before-recreation.log"
 # Recreate both application and database containers without deleting their volumes.
 "${compose[@]}" down
-"${compose[@]}" up -d --wait --wait-timeout 120 farmos
+"${compose[@]}" up -d --wait --wait-timeout 120 "$TEST_SERVICE"
 check_storage | tee "$TEST_ARTIFACTS/storage-after.log"
 "${compose[@]}" run --rm --no-deps -e TEST_PHASE=persistence playwright
-cron_started=$("${compose[@]}" exec -T farmos /bin/date +%s)
-"${compose[@]}" exec -T farmos /usr/bin/php /opt/farmos/vendor/drush/drush/drush.php \
-  --uri=http://farmos:8080 cron 2>&1 | tee "$TEST_ARTIFACTS/cron.log"
+cron_started=$("${compose[@]}" exec -T "$TEST_SERVICE" /bin/date +%s)
+"${compose[@]}" exec -T "$TEST_SERVICE" /usr/bin/php /opt/farmos/vendor/drush/drush/drush.php \
+  "--uri=$BASE_URL" cron 2>&1 | tee "$TEST_ARTIFACTS/cron.log"
 # Read Drupal's persisted state in a separate process, not just the command exit code.
-cron_last=$("${compose[@]}" exec -T farmos /usr/bin/php /opt/farmos/vendor/drush/drush/drush.php \
-  --uri=http://farmos:8080 state:get system.cron_last --format=string)
+cron_last=$("${compose[@]}" exec -T "$TEST_SERVICE" /usr/bin/php /opt/farmos/vendor/drush/drush/drush.php \
+  "--uri=$BASE_URL" state:get system.cron_last --format=string)
 printf 'cron_started=%s\nsystem.cron_last=%s\n' "$cron_started" "$cron_last" | tee -a "$TEST_ARTIFACTS/cron.log"
 case "$cron_last" in
   ''|*[!0-9]*) echo 'Drush did not return a numeric last-cron timestamp.' >&2; exit 1 ;;

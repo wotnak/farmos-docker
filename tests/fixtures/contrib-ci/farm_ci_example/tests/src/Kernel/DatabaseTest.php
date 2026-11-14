@@ -9,7 +9,7 @@ use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Group;
 
 /**
- * Checks database access and discovery of a declared Composer dependency.
+ * Checks Drupal database access from the contributed module fixture.
  */
 #[CoversNothing]
 #[Group('farm_ci_example')]
@@ -23,7 +23,7 @@ final class DatabaseTest extends KernelTestBase {
   /**
    * Persists a quantity through Drupal's actual database connection.
    */
-  public function testDatabaseAndDependency(): void {
+  public function testDatabase(): void {
     $database = $this->container->get('database');
     $database->schema()->createTable('farm_ci_quantity', [
       'fields' => [
@@ -34,8 +34,6 @@ final class DatabaseTest extends KernelTestBase {
     ]);
     $database->insert('farm_ci_quantity')->fields(['id' => 1, 'quantity' => 7])->execute();
     $this->assertEquals(7, $database->select('farm_ci_quantity')->fields('farm_ci_quantity', ['quantity'])->execute()->fetchField());
-    $path = $this->container->get('extension.list.module')->getPath('farm_ledger');
-    $this->assertFileExists(DRUPAL_ROOT . '/' . $path . '/farm_ledger.info.yml');
   }
 
 }

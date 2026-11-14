@@ -1,202 +1,89 @@
-# Resolve dependencies once per invocation; Task loads the local environment.
 version: '3'
 dotenv: ['.env']
+includes:
+  integration:
+    taskfile: ./tasks/integration.yml
+    internal: true
 vars:
   CONFIGURATION: '{{.CONFIGURATION | default ""}}'
+  VARIANT: '{{.VARIANT | default ""}}'
+  PREPARED: '{{.PREPARED | default "false"}}'
+  LOADED: '{{.LOADED | default "false"}}'
+  HTTPS: '{{.HTTPS | default "false"}}'
+  ACTION: '{{.ACTION | default "info"}}'
   LOCAL: >-
     python3 {{printf "%s/scripts/local_build.py" .ROOT_DIR | shellQuote}}
     --root {{.ROOT_DIR | shellQuote}}
     {{if .CONFIGURATION}}--configuration {{.CONFIGURATION | shellQuote}}{{end}}
+  VARIANT_ARG: '{{if .VARIANT}}--variant {{.VARIANT | shellQuote}}{{end}}'
 tasks:
-  default:
-    cmds:
-    - task: images
-  all:
-    desc: Build the configured image variants
-    cmds:
-    - task: images
   prepare-inputs:
-    desc: Resolve fresh Nix and Composer inputs for the configured profile
+    desc: Resolve fresh dependencies for the configured build profile
     run: once
     cmds:
     - '{{.LOCAL}} prepare'
+  _prepare:
+    internal: true
+    status:
+    - test {{.SKIP | shellQuote}} = true
+    cmds:
+    - task: prepare-inputs
   build:
-    desc: Build only the configured image variants
-    run: once
+    desc: Build selected variants (VARIANT optional; PREPARED=true reuses inputs)
     cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared build'
-  images:
-    desc: Build only the configured image variants
-    cmds:
-    - task: build
-  image:
-    desc: Build production, if enabled
-    run: once
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant production build'
-  dev-image:
-    desc: Build development, if enabled
-    run: once
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant development build'
-  runtime-image:
-    desc: Build runtime, if enabled
-    run: once
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant runtime build'
-  dev-runtime-image:
-    desc: Build development-runtime, if enabled
-    run: once
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant development-runtime build'
+    - task: _prepare
+      vars:
+        SKIP: '{{.PREPARED}}'
+    - '{{.LOCAL}} --prepared {{.VARIANT_ARG}} build'
   load:
-    desc: Build and load only the configured image variants into Docker
-    run: once
+    desc: Build and load selected variants (VARIANT optional; PREPARED=true reuses inputs)
     cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared load'
-  load-prepared:
-    desc: Build and load one variant from already prepared inputs
-    requires:
-      vars: [VARIANT]
-    cmds:
-    - '{{.LOCAL}} --prepared --variant {{.VARIANT | shellQuote}} load'
-  load-production:
-    desc: Build and load production, if enabled
-    run: once
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant production load'
-  load-dev:
-    desc: Build and load development, if enabled
-    run: once
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant development load'
-  load-runtime:
-    desc: Build and load runtime, if enabled
-    run: once
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant runtime load'
-  load-dev-runtime:
-    desc: Build and load development-runtime, if enabled
-    run: once
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant development-runtime load'
+    - task: _prepare
+      vars:
+        SKIP: '{{.PREPARED}}'
+    - '{{.LOCAL}} --prepared {{.VARIANT_ARG}} load'
   push:
-    desc: Build, load, and push only the configured image variants
+    desc: Build, load and push selected variants (VARIANT optional; PREPARED=true reuses inputs)
     cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared push'
-  tests:
-    desc: Build and run the suites for each configured image variant
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared test'
+    - task: _prepare
+      vars:
+        SKIP: '{{.PREPARED}}'
+    - '{{.LOCAL}} --prepared {{.VARIANT_ARG}} push'
   test:
-    desc: Run smoke tests for production, if enabled
+    desc: Test variants (VARIANT/SUITE optional; LOADED=true skips builds; PREPARED=true reuses inputs)
     cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant production --suite smoke test'
-  dev-test:
-    desc: Run smoke tests for development, if enabled
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant development --suite smoke test'
-  runtime-test:
-    desc: Run runtime tests for runtime, if enabled
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant runtime --suite runtime test'
-  dev-runtime-test:
-    desc: Run runtime tests for development-runtime, if enabled
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant development-runtime --suite runtime test'
-  database-test:
-    desc: Run database tests for production, if enabled
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant production --suite database test'
-  e2e-test:
-    desc: Run e2e tests for production, if enabled
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant production --suite e2e test'
-  phpunit-test:
-    desc: Run phpunit tests for development, if enabled
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant development --suite phpunit test {{.CLI_ARGS}}'
-  contrib-ci-test:
-    desc: Run contrib-ci tests for development, if enabled
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --variant development --suite contrib-ci test'
-  e2e-test-loaded:
-    desc: Run e2e tests against an already loaded production image
-    cmds:
-    - '{{.LOCAL}} --loaded --variant production --suite e2e test'
-  test-loaded:
-    desc: Test an already loaded variant, optionally selecting a suite
-    requires:
-      vars: [VARIANT]
-    cmds:
+    - task: _prepare
+      vars:
+        SKIP: '{{if eq .LOADED "true"}}true{{else}}{{.PREPARED}}{{end}}'
     - >-
-      {{.LOCAL}} --loaded --variant {{.VARIANT | shellQuote}}
+      {{.LOCAL}} --prepared {{.VARIANT_ARG}}
+      {{if eq .LOADED "true"}}--loaded{{end}}
       {{if .SUITE}}--suite {{.SUITE | shellQuote}}{{end}} test {{.CLI_ARGS}}
-  database-test-loaded:
-    desc: Run database tests against an already loaded production image
+  test-stack:
+    desc: Run a suite in the shared disposable Compose stack (SUITE required)
+    requires:
+      vars: [SUITE]
     cmds:
-    - '{{.LOCAL}} --loaded --variant production --suite database test'
-  phpunit-test-loaded:
-    desc: Run phpunit tests against an already loaded development image
-    cmds:
-    - '{{.LOCAL}} --loaded --variant development --suite phpunit test {{.CLI_ARGS}}'
-  contrib-ci-test-loaded:
-    desc: Run contrib-ci tests against an already loaded development image
-    cmds:
-    - '{{.LOCAL}} --loaded --variant development --suite contrib-ci test'
-  contrib-test:
-    desc: Build both configured runtimes and test contributed modules
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --suite contrib test'
-  contrib-test-loaded:
-    desc: Test contributed modules with the configured loaded runtime pair
-    cmds:
-    - '{{.LOCAL}} --loaded --suite contrib test'
+    - task: integration:run
+      vars:
+        SUITE: '{{.SUITE}}'
   run:
-    desc: Build and start the configured production image
+    desc: Build and start production (HTTPS=true enables public HTTPS; PREPARED=true reuses inputs)
     cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared run'
-  run-https:
-    desc: Start the configured production image with automatic public HTTPS
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared --https run'
-  flake-check:
-    desc: Prepare the configured profile and evaluate all flake systems
-    cmds:
-    - task: prepare-inputs
-    - '{{.LOCAL}} --prepared flake-check'
+    - task: _prepare
+      vars:
+        SKIP: '{{.PREPARED}}'
+    - '{{.LOCAL}} --prepared {{if eq .HTTPS "true"}}--https{{end}} run'
   clean:
     desc: Remove generated build outputs and test reports
     cmds:
     - if [ -d build ]; then find build -mindepth 1 -delete; fi
-  cache-info:
-    desc: Show usage and retained roots in the Docker Nix build cache
+  cache:
+    desc: Inspect or prune the existing Docker Nix build cache (ACTION=info|prune)
     cmds:
-    - bash scripts/nix-build-cache info
-  cache-prune:
-    desc: Retain configured image outputs and prune the Docker Nix build cache
-    cmds:
-    - '{{.LOCAL}} --prepared cache-prune'
+    - |
+      case {{.ACTION | shellQuote}} in
+        info) bash scripts/nix-build-cache info ;;
+        prune) {{.LOCAL}} --prepared cache-prune ;;
+        *) echo 'ACTION must be info or prune' >&2; exit 2 ;;
+      esac

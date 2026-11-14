@@ -1,10 +1,9 @@
 # farmOS end-to-end tests
 
-This independent Playwright project tests farmOS through its browser and HTTP
-interfaces. Its browser tests can target an existing site. Its Compose runners
-can create a disposable site using supplied container images, without Nix or
-files from the parent repository. Run it against a
-disposable site: tests create, modify and delete farm records and test accounts.
+This Playwright project tests farmOS through its browser and HTTP interfaces.
+Browser-only commands can target an existing disposable site. Container suites
+use the parent repository's Task commands and shared Compose services. Tests
+create, modify, and delete farm records and test accounts.
 
 `npm test` runs the core feature suite, including the persistence seed scenario.
 See [COVERAGE.md](COVERAGE.md) for the scenario matrix and known limits, and
@@ -14,6 +13,40 @@ Further research is in [CONTRIB-CANDIDATES.md](CONTRIB-CANDIDATES.md).
 modules and Manager/Worker/Viewer accounts, with fixtures and implementation stages.
 All specs live under `tests/`; feature specs are in `tests/features/`, shared
 browser helpers in `support/`, and persistence helpers in `helpers.js`.
+
+## Disposable container suites
+
+Run these commands from the repository root with Task, Docker Compose, and
+Python 3 available. Task derives image references from the root `.env` settings
+`FARMOS_IMAGE_NAME` and `FARMOS_IMAGE_TAG`, adding the selected variant's suffix.
+The configured images must already be loaded in Docker; these commands do not
+invoke Nix:
+
+```sh
+task test VARIANT=production SUITE=e2e LOADED=true
+task test SUITE=contrib LOADED=true
+CONTRIB_MODULES=crop_plan task test SUITE=contrib LOADED=true
+```
+
+The contrib suite uses both runtime variants from the same profile. Enable them
+in `FARMOS_IMAGE_VARIANTS` and load them before running the suite. To test a
+different existing image set, override `FARMOS_IMAGE_NAME` or `FARMOS_IMAGE_TAG`
+for the Task invocation rather than supplying separate test image variables.
+
+The central [`tests/compose.yaml`](../compose.yaml) defines the `e2e` and `contrib`
+profiles alongside the other container test suites. Task creates a fresh Compose
+project for each suite, starts its required services, collects reports and logs,
+and removes the project's containers, networks, and volumes on success or failure.
+This is a disposable test environment, not a persistent development stack.
+
+Task supplies `TEST_COMPOSE_PROJECT`, `TEST_COMPOSE_FILE`, and `TEST_ARTIFACTS` to
+the internal shell runners. Use `task test` with `LOADED=true` instead of calling
+`scripts/test.sh` or `scripts/contrib-test.sh` directly. Those runners rely on the
+Task-provided services and paths. See the
+[shared test stack guide](../../docs/guide.md#shared-disposable-test-stack) for
+other profiles, including PHPUnit.
+
+## Browser-only runs against a disposable site
 
 From this directory, install the pinned dependencies and Chromium:
 
@@ -34,8 +67,9 @@ still run through the browser:
 BASE_URL=http://localhost:8080 FARMOS_DB_HOST=db npm run test:install
 ```
 
-Defaults are for the repository's disposable Compose stack. Override them when
-running against another test environment:
+Browser-only commands use the defaults below. The Task-managed stack supplies
+its own service settings. Override these values to match a different disposable
+test site:
 
 | Variable | Default |
 | --- | --- |
@@ -87,25 +121,24 @@ Each phase writes JUnit and HTML reports, and keeps screenshots, video,
 and traces on failure. Use `npx playwright show-report artifacts/core/report`
 to inspect a report.
 
-From this directory, `bash scripts/test.sh` supplies the disposable Compose
-stack and the stock Microsoft Playwright container. The test project is mounted
-read-only, and `npm ci` installs its pinned dependencies once into a disposable
-Compose volume mounted at `/tests/node_modules`. The stock image includes browser
-binaries and system dependencies, but the project must install `@playwright/test`
-from its own package manifest and lock file, as explained in the
-[Playwright Docker documentation](https://playwright.dev/docs/docker#introduction). It runs installation and core tests, recreates
-the containers, and runs persistence tests and Drush cron. It checks Drupal's
-persisted last-cron timestamp to confirm execution. The Compose stack supplies
-fixed test-only database settings through environment variables. The image generates
-and persists its hash salt in the private-files volume.
-Only public files and `/opt/farmos/private_files` use writable application data
-volumes. The runner checks that `settings.php` and its parent stay read-only while
-both file directories remain writable before installation and after recreation.
-farmOS and PostgreSQL use an internal network; only the Playwright service also
-has an external network for installing npm dependencies and loading browser assets. It collects container logs and removes its containers and volumes.
-The Playwright image tag in `compose.yaml` and npm dependency use matching
-versions; update both
-along with `package-lock.json` when upgrading.
+The Task-managed E2E suite uses the stock Microsoft Playwright container. The
+test project is mounted read-only, and `npm ci` installs its pinned dependencies
+once into a disposable volume mounted at `/tests/node_modules`. The stock image
+includes browsers and system dependencies, while the project supplies
+`@playwright/test` through its own manifest and lock file. See the
+[Playwright Docker documentation](https://playwright.dev/docs/docker#introduction).
+Keep the Playwright image version in the shared [`tests/compose.yaml`](../compose.yaml)
+aligned with `package.json` and `package-lock.json` when upgrading.
+
+The suite installs farmOS, runs core tests, recreates the application and database
+containers while retaining their test volumes, then checks persistence and Drush
+cron. It reads Drupal's persisted last-cron timestamp to confirm execution. The
+shared stack supplies test-only database settings; the image generates and saves
+its hash salt in private storage. Only public files and `/opt/farmos/private_files`
+are writable application data mounts. The suite checks protected settings and
+writable storage before installation and after recreation. Task owns final log
+collection and volume removal even if any phase fails, and prints the report
+location for that run.
 
 ## Contributed modules
 
@@ -114,17 +147,9 @@ Crop Plan and Grazing Plan. Both planning modules allow alpha releases and
 participate in the normal run. Failures fail the suite. Findings are recorded in
 [CONTRIB-ISSUES.md](CONTRIB-ISSUES.md).
 
-With Docker Compose and Python 3 available, run from this directory:
-
-```sh
-# The base suite uses a complete farmOS image.
-IMAGE=ghcr.io/wotnak/farmos:4 bash scripts/test.sh
-# Contrib uses the supplied runtime images and its own Composer project.
-RUNTIME_IMAGE=ghcr.io/wotnak/farmos:4-runtime \
-DEV_RUNTIME_IMAGE=ghcr.io/wotnak/farmos:4-dev-runtime bash scripts/contrib-test.sh
-# Select a module while developing. It gets its own fresh database and volumes.
-CONTRIB_MODULES=crop_plan bash scripts/contrib-test.sh
-```
+Use `task test SUITE=contrib LOADED=true` from the repository root as shown above.
+`CONTRIB_MODULES` selects a subset for a run; it still gets fresh database and
+application storage through its own disposable Task-managed project.
 
 Images must already be available in Docker. A separate image build is not needed
 for Playwright or for the contrib codebase. The development runtime resolves fresh compatible dependencies from
@@ -132,22 +157,17 @@ for Playwright or for the contrib codebase. The development runtime resolves fre
 without Composer development dependencies.
 The production runtime serves that project through a read-only mount. The
 fixture's `settings.php` uses the runtime's `/usr/share/farmos/environment.php`
-contract. It is part of this project, so no parent-repository settings file is
-needed. Only file volumes and temporary directories are writable.
+contract. Only file volumes and temporary directories are writable. The shared
+Compose services and Task lifecycle come from the parent repository.
 
-The runner installs farmOS through the browser, enables the selected contrib
-modules with Drush, runs their browser/API workflows, recreates both application
-and database containers, then checks saved records, quantities, relationships
-and uploaded bytes in fresh sessions. It runs cron and removes its containers
-and volumes, including on failure. JUnit/HTML reports, traces, exact Composer
-locks, enabled-module inventory and container logs are saved under
-`artifacts/contrib/run-*`. Each run prepares a fresh codebase, then removes it
-during cleanup. Only the Composer download cache is reused under
-`artifacts/contrib/composer-cache/`. `TEST_ARTIFACTS` changes the report parent;
-`COMPOSER_CACHE_PATH` overrides the download-cache directory. For local module
-development, `FARMOS_PROJECT_PATH` opts into reusing a prepared project and keeps
-it after the run. That mode can retain local package edits, so leave it unset
-when validating fresh dependencies. Do not prepare a shared project concurrently.
+The suite installs farmOS through the browser, enables selected modules with
+Drush, and runs their browser/API workflows. It recreates the application and
+database containers, then checks saved records, quantities, relationships, and
+uploaded bytes in fresh sessions before running cron. Task collects JUnit/HTML
+reports, traces, the exact Composer lock, enabled-module inventory, and container
+logs in the run's artifact directory, then removes the disposable stack even on
+failure. Default runs prepare a fresh temporary contrib codebase. The Composer
+download cache can be reused; `COMPOSER_CACHE_PATH` selects its location.
 
 Against an already installed disposable site with these modules enabled:
 
@@ -157,12 +177,11 @@ BASE_URL=http://localhost:8080 npm run test:contrib
 BASE_URL=http://localhost:8080 npm run test:contrib-persistence
 ```
 
-To extract this suite, copy this entire directory, including its dotfiles.
-The `scripts/`, both Compose files, `fixtures/`, browser specs and npm
-manifest are self-contained. The parent repository's Task and CI commands are
-thin callers. Each contrib run resolves its own compatible dependency set and
-saves the generated Composer lock with its reports. Its Docker images need to
-implement the paths and environment contract described above.
+Browser-only tests can be moved with this directory's npm manifests, specs,
+fixtures, and helpers when a disposable farmOS site is supplied separately. To
+retain automatic container orchestration, also retain the parent repository's
+Task files, test lifecycle code, and shared `tests/compose.yaml`. Copying only the
+E2E directory does not provide the disposable service stack or cleanup lifecycle.
 
 The [Drupal Playwright project](https://git.drupalcode.org/project/playwright)
 provides Drupal-specific test-site tooling. This suite keeps its HTTP-only

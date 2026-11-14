@@ -75,7 +75,7 @@ FARMOS_VERSION=dev-feature \
 FARMOS_IMAGE_TAG=myfeature \
 FARMOS_IMAGE_VARIANTS=development \
 FARMOS_REPOSITORY='{"type":"vcs","url":"https://github.com/YOUR-ORG/farmOS"}' \
-task images
+task build
 ```
 
 Set the same values as GitHub Environment variables to build that profile in CI.
@@ -102,30 +102,56 @@ nix develop
 After configuring `.env`:
 
 ```sh
-task images          # build the selected variants
-task load            # build and load the selected variants into Docker
-task tests           # run tests applicable to the selected profile
+task build # build the selected variants
+task load  # build and load the selected variants into Docker
+task test  # run tests applicable to the selected profile
 ```
 
-`task image`, `task dev-image`, `task runtime-image`, and `task dev-runtime-image`
-select an individual variant from the configured profile. That variant must be
-enabled in `FARMOS_IMAGE_VARIANTS`. Build preparation runs once per invocation,
-and its Composer lock is shared across selected variants.
+`VARIANT` selects one configured variant for `build`, `load`, `push`, or `test`.
+Omit it to use the configured selection. Its value must be `production`,
+`development`, `runtime`, or `development-runtime`, enabled in
+`FARMOS_IMAGE_VARIANTS`. For example:
+
+```sh
+task build VARIANT=development
+task load VARIANT=runtime
+task test VARIANT=development SUITE=phpunit
+```
+
+Build preparation runs once per invocation, and its Composer lock is shared
+across selected variants. `PREPARED=true` reuses the existing generated inputs
+instead of resolving dependencies again. `LOADED=true` on `test` uses images
+already loaded in Docker. `SUITE` selects one test suite. With `SUITE=phpunit`,
+arguments after `--` are passed to PHPUnit. Use `test-stack` for Python test-class
+selectors. Run `task --list` to see the small set of Task
+commands and their parameters.
+
+The public Task commands are:
+
+| Command | Parameters |
+| --- | --- |
+| `prepare-inputs` | Resolve the configured Composer and Nix dependencies |
+| `build`, `load`, `push` | Optional `VARIANT` and `PREPARED=true` |
+| `test` | Optional `VARIANT`, `SUITE`, `LOADED=true`, `PREPARED=true`, and PHPUnit arguments after `--` |
+| `test-stack` | Required `SUITE`; optional test arguments after `--` |
+| `run` | Optional `HTTPS=true` and `PREPARED=true` |
+| `clean` | Remove generated build output |
+| `cache` | `ACTION=info` or `ACTION=prune` |
 
 Override the Linux system or build profile through environment variables:
 
 ```sh
-NIX_SYSTEM=x86_64-linux task images
-NIX_SYSTEM=aarch64-linux task images
-FARMOS_VERSION=4.x-dev FARMOS_IMAGE_TAG=4.x FARMOS_IMAGE_VARIANTS=development task images
+NIX_SYSTEM=x86_64-linux task build
+NIX_SYSTEM=aarch64-linux task build
+FARMOS_VERSION=4.x-dev FARMOS_IMAGE_TAG=4.x FARMOS_IMAGE_VARIANTS=development task build
 ```
 
-The production checks cover runtime behavior, HTTP protections, database settings,
+Available production checks cover runtime behavior, HTTP protections, database settings,
 installation, core workflows, persistence, and cron. Development checks cover
 Composer, Xdebug, contributed-module QA, and upstream PHPUnit. Runtime checks
 exercise supplied codebases. The contrib suite uses the runtime and development
-runtime variants. Run `task --list` for the individual test commands and their
-requirements. Task is included in `nix develop`.
+runtime variants. Select these checks through `task test SUITE=...` or the
+disposable stack entrypoint below. Task is included in `nix develop`.
 
 ### Contributed module CI
 
@@ -142,7 +168,7 @@ When using `farmos-nix-build-cache` as `/nix` in a Linux builder container, old
 toolchains, source trees, Composer vendors, and image outputs accumulate there.
 This is separate from Docker image storage and farmOS application data.
 
-Run `task cache-info` to inspect it, or `task cache-prune` when builds have stopped.
+Run `task cache ACTION=info` to inspect it, or `task cache ACTION=prune` when builds have stopped.
 Pruning first retains the configured image variants and their Docker loaders,
 then removes unreferenced Nix paths and deduplicates identical files. It keeps the builder's
 registered roots and does not touch database, upload, or Docker image storage.
@@ -150,23 +176,64 @@ Changing sources after pruning can require downloading or rebuilding build tools
 Use `NIX_CACHE_VOLUME` to select a different existing build-cache volume. These
 tasks do not prune a native host Nix installation.
 
-### Application acceptance tests
+### Shared disposable test stack
 
-The two application suites use separate, disposable Compose projects. They test the farmOS code packaged in the images and require Docker Compose. The runners collect reports and container logs, then remove their own containers, networks, and volumes. They do not use the deployment's `.env` file or volumes.
+[`tests/compose.yaml`](../tests/compose.yaml) defines the shared integration-test
+services. Task owns their lifecycle. Every suite gets a fresh Compose
+project, starts its required services, runs the checks, saves reports and
+container logs, and removes its containers, networks, and volumes even when a
+check fails. These are disposable test environments, not persistent development
+stacks. They do not use deployment example volumes or credentials.
 
-To test images already loaded into Docker without invoking Nix:
+| Suite | Checks |
+| --- | --- |
+| `phpunit` | Upstream farmOS PHPUnit with PostgreSQL and browser support |
+| `e2e` | Browser installation, core workflows, persistence, and cron |
+| `contrib-ci` | Contributed-module Composer, PHPCS, PHPStan, and PHPUnit commands |
+| `contrib` | Contributed-module browser/API workflows and persistence |
+| `database` | Database settings, connections, SQLite installation, and persistent salt/storage |
+| `runtime` | Supplied-codebase runtime behavior |
+| `http` | HTTP file protection, trusted hosts/proxies, and container isolation |
+
+The suites share one service definition while their Task-managed projects remain
+separate. Database and runtime cases use the common PostgreSQL service; other
+suites activate their application services through Compose profiles. Tests that need invalid settings, alternate mounts, or TLS combinations
+still create disposable per-case containers. Database-backed cases use the shared
+PostgreSQL service instead of starting another database definition.
+
+Test commands derive image references from the current profile
+`FARMOS_IMAGE_NAME` and `FARMOS_IMAGE_TAG`, including each variant's suffix. To test
+those images already loaded in Docker without invoking Nix, run from the
+repository root:
 
 ```sh
-IMAGE=ghcr.io/wotnak/farmos:4 bash tests/e2e/scripts/test.sh
-IMAGE=ghcr.io/wotnak/farmos:4-dev bash tests/phpunit-test.sh
-IMAGE=ghcr.io/wotnak/farmos:4.x-dev TEST_ARTIFACTS=build/tests/phpunit-4x bash tests/phpunit-test.sh
+task test VARIANT=production SUITE=e2e LOADED=true
+task test VARIANT=development SUITE=phpunit LOADED=true
+FARMOS_VERSION=4.x-dev FARMOS_IMAGE_TAG=4.x task test VARIANT=development SUITE=phpunit LOADED=true
+task test VARIANT=production SUITE=http LOADED=true
 ```
 
-The equivalent Task commands are `IMAGE=ghcr.io/wotnak/farmos:4 task e2e-test-loaded` and `IMAGE=ghcr.io/wotnak/farmos:4-dev task phpunit-test-loaded`. These skip image builds and loading.
+To test a different existing image, override the same profile settings for that
+invocation. For example, `FARMOS_IMAGE_TAG=mybuild` selects `mybuild-dev` for the
+development variant; `FARMOS_IMAGE_NAME` changes its container repository. The
+generic entrypoint also derives its image references from the profile:
+
+```sh
+task test-stack SUITE=phpunit
+# Select a Python test class within the database suite:
+task test-stack SUITE=database -- SettingsTests
+```
+
+Task supplies `TEST_COMPOSE_PROJECT`, `TEST_COMPOSE_FILE`, and `TEST_ARTIFACTS` to
+the internal runners. Invoke the Task commands instead of running those shell or
+Python runners directly; the runners depend on the services and paths Task
+prepared for them.
+
+### Application acceptance tests
 
 The Playwright suite installs farmOS through the browser and tests standard assets, logs, quantities, inventory, quick forms, farms, imports/exports, attachments, comments, revision history, roles, JSON:API and OAuth. It checks records, uploaded files and OAuth signing keys after recreating the application and database containers, then verifies Drush cron. The production application runs read-only with only public-file and private-data volumes writable. Playwright uses the stock Microsoft image with the test project mounted read-only and dependencies installed into a disposable Compose volume. See the [coverage matrix](../tests/e2e/COVERAGE.md) for scenarios and limits, and the [contrib coverage](../tests/e2e/CONTRIB-TEST-PLAN.md) for the seven-module suite.
 
-Run `task contrib-test-loaded` with the runtime and development runtime images already loaded. This tests Calendar, Ledger, Eggs, Beekeeping, Fungi, Crop Plan and Grazing Plan against a separately resolved Composer project. Both planning modules participate in the default suite. `CONTRIB_MODULES=crop_plan,grazing_plan` selects a subset. The contrib project is served read-only by the production runtime; Composer runs only during preparation in the development runtime. Findings and reproduction steps are kept in [the contrib issues file](../tests/e2e/CONTRIB-ISSUES.md). `task tests` includes this suite when both runtime variants are selected. A dedicated CI workflow runs all seven modules on relevant pull requests and manual dispatches.
+Run `task test SUITE=contrib LOADED=true` with the runtime and development runtime images already loaded. This tests Calendar, Ledger, Eggs, Beekeeping, Fungi, Crop Plan and Grazing Plan against a separately resolved Composer project. Both planning modules participate in the default suite. `CONTRIB_MODULES=crop_plan,grazing_plan` selects a subset. The contrib project is served read-only by the production runtime; Composer runs only during preparation in the development runtime. Findings and reproduction steps are kept in [the contrib issues file](../tests/e2e/CONTRIB-ISSUES.md). `task test` includes this suite when both runtime variants are selected. A dedicated CI workflow runs all seven modules on relevant pull requests and manual dispatches.
 
 The [candidate research](../tests/e2e/CONTRIB-CANDIDATES.md) ranks further modules
 and their compatibility checks. The [user journey plan](../tests/e2e/USER-JOURNEY-TEST-PLAN.md)
@@ -174,12 +241,18 @@ describes market-garden, grazing, poultry, apiary and fungi workflows across
 modules and user roles. These documents propose future E2E work; they do not
 add dependencies to the current fixture.
 
-The browser suite is a self-contained project in [`tests/e2e/`](../tests/e2e/README.md), with its own dependencies and configuration. It accepts a target URL and credentials for a disposable farmOS test deployment outside this repository. Its Compose files, shell runners and contrib manifest also live in that directory, so it can be extracted to a separate repository. The shell runner owns Compose startup, container recreation, and cron; the browser tests contain no Docker orchestration. Feature specs live under `tests/e2e/tests/features/`, with reusable HTTP/browser helpers under `tests/e2e/support/`.
+The browser project in [`tests/e2e/`](../tests/e2e/README.md) has its own npm
+dependencies and can target an existing disposable farmOS site through a URL and
+credentials. Its container suites depend on the repository's Task lifecycle and
+shared Compose file; copying only the E2E directory does not provide that
+orchestration. Browser specs contain no Docker orchestration. Feature specs live
+under `tests/e2e/tests/features/`, with reusable HTTP/browser helpers under
+`tests/e2e/support/`.
 
 The PHPUnit suite runs the upstream tests under `web/profiles/farm` in the matching development image, with PostgreSQL, a browser service, and Xdebug disabled. It uses a separate database from the Playwright suite. Extra PHPUnit arguments can select tests while debugging:
 
 ```sh
-IMAGE=ghcr.io/wotnak/farmos:4-dev bash tests/phpunit-test.sh --filter Asset
+task test VARIANT=development SUITE=phpunit LOADED=true -- --filter Asset
 ```
 
 Reports go into a new run directory under `build/tests/e2e/`, `build/tests/contrib/` or `build/tests/phpunit/`. Set `TEST_ARTIFACTS` to choose another parent directory. CI runs core E2E for production and PHPUnit for development on native AMD64 and ARM64 runners, requiring the applicable checks before publishing image candidates. The contrib workflow runs separately on AMD64 for pull requests and manual dispatches. All retain failure artifacts.
@@ -251,8 +324,8 @@ Its variables determine the build. Disable the `publish` option to run the
 builds and tests without updating public image tags.
 
 CI and local builds share the Task commands. CI runs `task prepare-inputs`, then
-`task load-prepared VARIANT=production` and the loaded-image test tasks for each
-selected variant. `CONFIGURATION=path/to/build.json` supplies an explicit profile
+`task load VARIANT=production PREPARED=true` and
+`task test VARIANT=production LOADED=true` for the selected variant. `CONFIGURATION=path/to/build.json` supplies an explicit profile
 to these tasks; matrix jobs use `.build-inputs/build.json` to reuse the resolved
 dependencies without preparing them again. Matrix generation and multi-platform
 publishing remain workflow-specific commands.
@@ -295,7 +368,7 @@ task run
 
 `task run` builds and loads the configured production variant, then starts
 `examples/prod` with that image. Enable `production` in the build profile first. For public HTTPS, set `FARMOS_DOMAIN` in the example's `.env`, point
-DNS at the server, allow TCP ports 80 and 443, and run `task run-https`.
+DNS at the server, allow TCP ports 80 and 443, and run `task run HTTPS=true`.
 This enables automatic certificates and publishes those ports on all host interfaces.
 
 Drupal cron uses the image's `farmos-cron` command in a separate container.
@@ -303,10 +376,10 @@ Drupal cron uses the image's `farmos-cron` command in a separate container.
 including the generated hash salt and certificates, persist in volumes.
 See the chosen example for storage, networking, proxy settings, and backups.
 
-Docker setup tests use their own disposable web-only configuration at
-[`tests/compose.docker-setup.yaml`](../tests/compose.docker-setup.yaml).
-They also render the deployment examples to check their configuration.
-Other test suites keep their Compose fixtures under `tests/`.
+The HTTP suite uses the `http` profile in the shared
+[`tests/compose.yaml`](../tests/compose.yaml). It also renders the deployment
+examples to check their configuration. Task removes the disposable test project
+after the suite finishes.
 
 Development images include Git with HTTPS support and PCRE matching. Optional
 Python and Perl integrations and bundled manuals are omitted. PostgreSQL client
@@ -319,11 +392,11 @@ The `-runtime` image contains the production PHP 8.4 runtime with GEOS and Frank
 Build and load it with:
 
 ```sh
-task runtime-image
-task load-runtime
+task build VARIANT=runtime
+task load VARIANT=runtime
 ```
 
-Use a Composer project with `composer.json` and `composer.lock` at its root and the standard `web/` document root. First load the development runtime with `task load-dev-runtime` from this repository. Then install dependencies from your project directory:
+Use a Composer project with `composer.json` and `composer.lock` at its root and the standard `web/` document root. First load the development runtime with `task load VARIANT=development-runtime` from this repository. Then install dependencies from your project directory:
 
 ```sh
 docker run --rm \
@@ -415,6 +488,8 @@ farmOS images use `/opt/farmos`.
 
 - `flake.nix` declares Nix inputs, selected image outputs, and development shells.
 - `Taskfile.yml` provides profile-based build, load, test, and push commands.
+- `tasks/integration.yml` owns disposable test-project startup, execution, report
+  collection, and cleanup.
 - `packages/drupal-runtime/` builds FrankenPHP, PHP CLI, Composer, Caddy
   protections, and generic container scripts.
 - `packages/farmos-runtime/` adds farmOS PHP extensions and settings.
@@ -431,4 +506,5 @@ farmOS images use `/opt/farmos`.
 - `.github/workflows/build-images.yaml` builds, tests, and publishes one
   selected environment's images and multi-platform manifests.
 - `examples/` contains standalone deployment configurations.
-- `tests/` contains image checks and application acceptance suites.
+- `tests/compose.yaml` defines the shared disposable services and suite profiles.
+- `tests/` contains image checks and application acceptance suites invoked by Task.

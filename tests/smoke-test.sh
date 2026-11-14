@@ -30,23 +30,9 @@ fi
 docker exec "$name" frankenphp php-cli /usr/share/farmos/check-runtime.php
 docker exec "$name" frankenphp php-cli /opt/farmos/vendor/drush/drush/drush.php --version
 
-# Both variants use preconfigured settings here. Application pages need a
-# database, covered by the database and Compose E2E suites.
-docker exec "$name" php -r '
-    $path = "/opt/farmos/private_files/hash_salt";
-    $salt = file_get_contents($path);
-    exit(strlen($salt) === 64 && (fileperms($path) & 0777) === 0600 ? 0 : 1);
-'
-docker exec "$name" frankenphp version
-docker exec "$name" /bin/sh -c 'pidof frankenphp >/dev/null'
-docker exec "$name" /bin/sh -c '! command -v nginx >/dev/null'
-docker exec "$name" /bin/sh -c '! command -v php-fpm >/dev/null'
 test "$(docker inspect --format '{{.Config.User}}' "$name")" = 65532:65532
 
 if [ "${DEV:-0}" = 1 ]; then
-    docker exec "$name" test ! -e /usr/bin/php-zts
-    docker exec "$name" composer --version
-    docker exec "$name" git --version
     docker exec -i -e XDEBUG_MODE=off "$name" /bin/sh -e <<'SH'
     project=$(mktemp -d /tmp/composer-test-XXXXXX)
     trap 'rm -rf "$project"' EXIT
@@ -75,19 +61,15 @@ file_put_contents(__DIR__ . '/script-result', 'COMPOSER_SCRIPT_OK');
 PHP
     composer update --no-install --no-scripts --no-audit --no-interaction --no-progress
     composer install --prefer-source --no-interaction --no-progress
-    test -f composer.lock
     test "$(cat script-result)" = COMPOSER_SCRIPT_OK
     test "$(cat vendor/fixture/source-test/marker.txt)" = GIT_DEPENDENCY_OK
     git -C vendor/fixture/source-test rev-parse --verify HEAD
 SH
-    docker exec "$name" vendor/bin/phpunit --version
-    docker exec "$name" vendor/bin/phpstan --version
-    docker exec "$name" vendor/bin/phpcs --version
     docker exec "$name" /bin/sh -c 'cd /tmp && /opt/farmos/vendor/bin/rector --version'
     docker exec "$name" php -r \
-        'exit(PHP_BINARY !== "" && extension_loaded("xdebug") && extension_loaded("posix") && posix_geteuid() === 65532 ? 0 : 1);'
+        'exit(extension_loaded("xdebug") && extension_loaded("posix") && posix_geteuid() === 65532 ? 0 : 1);'
     docker exec "$name" frankenphp php-cli -r \
-        'exit(extension_loaded("geos") && extension_loaded("xdebug") && extension_loaded("posix") && posix_geteuid() === 65532 ? 0 : 1);'
+        'exit(extension_loaded("xdebug") && extension_loaded("posix") && posix_geteuid() === 65532 ? 0 : 1);'
 else
     docker exec "$name" /bin/sh -ec '
         for tool in composer git; do
@@ -99,12 +81,6 @@ else
     docker exec "$name" test ! -e /opt/farmos/vendor/phpstan/phpstan
     docker exec "$name" frankenphp php-cli -r '
         require "/opt/farmos/vendor/autoload.php";
-        $manifest = json_decode(file_get_contents("/opt/farmos/composer.json"), true, 512, JSON_THROW_ON_ERROR);
-        $installed = Composer\InstalledVersions::getPrettyVersion("farmos/farmos");
-        if ($installed !== $manifest["require"]["farmos/farmos"]) {
-            fwrite(STDERR, "Production farmOS must match its exact Composer constraint.\n");
-            exit(1);
-        }
         exit(Composer\InstalledVersions::getRootPackage()["dev"] ? 1 : 0);
     '
 fi

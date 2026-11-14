@@ -125,8 +125,7 @@ class LocalBuild:
             self.run("docker", "push", self.images[name])
 
     def test_variant(self, variant, suite=None, *, loaded=False, arguments=()):
-        image = self.environment.get("IMAGE") if loaded else None
-        image = image or self.images[variant]
+        image = self.images[variant]
         common = {"IMAGE": image, "DEV": "1" if variant in {"development", "development-runtime"} else "0"}
         if suite is None:
             suites = {"production": ["smoke", "database", "e2e"],
@@ -134,7 +133,7 @@ class LocalBuild:
                       "runtime": ["runtime"], "development-runtime": ["runtime"]}[variant]
         else:
             allowed = {"smoke": {"production", "development"}, "database": {"production"},
-                       "e2e": {"production"}, "phpunit": {"development"},
+                       "e2e": {"production"}, "http": {"production"}, "phpunit": {"development"},
                        "contrib-ci": {"development"}, "runtime": {"runtime", "development-runtime"}}
             if variant not in allowed.get(suite, set()):
                 raise LocalBuildError(f"Test suite {suite} does not apply to variant {variant}")
@@ -142,29 +141,21 @@ class LocalBuild:
         for selected in suites:
             if selected == "smoke":
                 self.run("sh", "tests/smoke-test.sh", environment=common)
-            elif selected == "database":
-                self.run(sys.executable, "tests/test-database-settings.py", environment={**common, "DB_TEST_IMAGE": image})
-            elif selected == "runtime":
-                self.run(sys.executable, "tests/runtime-image-test.py", environment=common)
             else:
-                script, artifacts = {
-                    "e2e": ("tests/e2e/scripts/test.sh", "e2e"),
-                    "phpunit": ("tests/phpunit-test.sh", "phpunit"),
-                    "contrib-ci": ("tests/contrib-ci-test.sh", "contrib-ci"),
-                }[selected]
-                extra = tuple(arguments) if selected == "phpunit" else ()
-                self.run("bash", script, *extra, environment={
-                    **common, "TEST_ARTIFACTS": self.environment.get("TEST_ARTIFACTS") or str(self.root / "build/tests" / artifacts),
+                arguments_for_suite = tuple(arguments) if selected == "phpunit" else ()
+                command = ["task", "test-stack", "SUITE=" + selected]
+                if arguments_for_suite:
+                    command += ["--", *arguments_for_suite]
+                self.run(*command, environment={
+                    **common, "DB_TEST_IMAGE": image,
+                    "TEST_ARTIFACTS": self.environment.get("TEST_ARTIFACTS") or str(self.root / "build/tests" / selected),
                 })
 
     def contrib(self, *, loaded=False):
         self.require_runtimes()
         runtime = self.images["runtime"]
         development = self.images["development-runtime"]
-        if loaded:
-            runtime = self.environment.get("RUNTIME_IMAGE") or self.environment.get("CONTRIB_RUNTIME_IMAGE") or runtime
-            development = self.environment.get("DEV_RUNTIME_IMAGE") or self.environment.get("CONTRIB_DEV_RUNTIME_IMAGE") or development
-        self.run("bash", "tests/e2e/scripts/contrib-test.sh", environment={
+        self.run("task", "test-stack", "SUITE=contrib", environment={
             "RUNTIME_IMAGE": runtime,
             "DEV_RUNTIME_IMAGE": development,
             "TEST_ARTIFACTS": self.environment.get("TEST_ARTIFACTS") or str(self.root / "build/tests/contrib"),
@@ -175,8 +166,6 @@ class LocalBuild:
         selected = self.require_runtimes() if suite == "contrib" else self.variants(variant)
         if suite is not None and suite != "contrib" and variant is None:
             raise LocalBuildError("Select a variant for an individual test suite")
-        if loaded and len(selected) > 1 and self.environment.get("IMAGE"):
-            raise LocalBuildError("IMAGE overrides require one selected test variant")
         if not loaded:
             self.load(variants=selected)
         if suite == "contrib":
@@ -207,10 +196,10 @@ def main(argv=None):
     parser.add_argument("--system")
     parser.add_argument("--prepared", action="store_true")
     parser.add_argument("--variant", choices=tuple(build_config.VARIANTS))
-    parser.add_argument("--suite", choices=("smoke", "database", "e2e", "phpunit", "contrib-ci", "runtime", "contrib"))
+    parser.add_argument("--suite", choices=("smoke", "database", "http", "e2e", "phpunit", "contrib-ci", "runtime", "contrib"))
     parser.add_argument("--loaded", action="store_true")
     parser.add_argument("--https", action="store_true")
-    parser.add_argument("operation", choices=("prepare", "validate", "build", "load", "push", "test", "run", "flake-check", "cache-plan", "cache-prune"))
+    parser.add_argument("operation", choices=("prepare", "image", "validate", "build", "load", "push", "test", "run", "flake-check", "cache-plan", "cache-prune"))
     args, arguments = parser.parse_known_args(argv)
     if arguments and arguments[0] == "--":
         arguments = arguments[1:]
@@ -225,6 +214,10 @@ def main(argv=None):
             local.require_runtimes()
         if args.operation == "prepare":
             local.prepare()
+        elif args.operation == "image":
+            if args.variant is None:
+                raise LocalBuildError("Select a variant to print its image reference")
+            print(local.images[args.variant])
         elif args.operation == "validate":
             if args.prepared:
                 prepared_profile(local.root, local.profile)

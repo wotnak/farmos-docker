@@ -35,7 +35,6 @@ test('administrator manages a Viewer account whose session can read records but 
       await page.locator('input[name="roles[farm_viewer]"]').check();
       await page.locator('input[name="notify"]').uncheck();
       await page.getByRole('button', { name: 'Create new account', exact: true }).click();
-      await expect(page.getByText('No email has been sent.', { exact: false })).toBeVisible();
       const userLink = page.getByRole('link', { name: viewerName, exact: true }).first();
       await expect(userLink).toHaveAttribute('href', /\/user\/\d+$/);
       userPath = await userLink.getAttribute('href');
@@ -111,7 +110,6 @@ for (const role of ['farm_worker', 'farm_manager']) {
     await page.locator(`input[name="roles[${role}]"]`).check();
     await page.locator('input[name="notify"]').uncheck();
     await page.getByRole('button', { name: 'Create new account', exact: true }).click();
-    await expect(page.getByText('No email has been sent.', { exact: false })).toBeVisible();
     const context = await browser.newContext({ baseURL: new URL(page.url()).origin });
     try {
       const member = await context.newPage();

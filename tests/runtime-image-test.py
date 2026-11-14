@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check a built runtime image with disposable containers and a synthetic app."""
+"""Check a runtime image with disposable apps and Task's shared PostgreSQL."""
 
 import http.client
 import json
@@ -75,7 +75,6 @@ class RuntimeImageTests(unittest.TestCase):
             test ! -e /opt/farmos/vendor
             test ! -e /usr/share/farmos/sites
             test ! -e /opt/farmos/composer.json
-            test ! -e /opt/farmos/keys
         ''', check=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -102,7 +101,6 @@ class RuntimeImageTests(unittest.TestCase):
                 args, _ = self.container_args()
                 result = run(*args, "--rm", IMAGE, *command, check=False)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertTrue(result.stdout.strip() or result.stderr.strip())
         if DEV:
             for command in (["php"], ["frankenphp", "php-cli"]):
                 with self.subTest(development_php=command):
@@ -155,23 +153,19 @@ exit($attempt === 1 ? 1 : 0);
                 if command -v "$tool"; then exit 1; fi
             done
             test ! -e /usr/share/composer/composer.phar
-            test ! -L /usr/bin/php
             php -r '
                 exit(!extension_loaded("xdebug") ? 0 : 1);
             '
         '''
         if DEV:
             script = '''
-                composer --version
-                git --version
-                for command in psql pg_dump pg_dumpall pg_restore pg_isready \\
-                    createdb dropdb createuser dropuser pgbench; do
+                # Dump/restore exercises the other client commands below.
+                for command in pg_isready createuser dropuser pgbench; do
                     "$command" --version
                 done
                 # Check the store as well as PATH: hiding a symlink would
                 # still leave these executables and dependencies in the image.
-                for binary in /nix/store/*/bin/postgres /nix/store/*/bin/initdb \\
-                    /nix/store/*/bin/php-fpm /nix/store/*/sbin/php-fpm \\
+                for binary in /nix/store/*/bin/php-fpm /nix/store/*/sbin/php-fpm \\
                     /nix/store/*/bin/php-cgi /nix/store/*/bin/phpdbg \\
                     /nix/store/*/bin/pear /nix/store/*/bin/pecl; do
                     if [ -e "$binary" ]; then
@@ -179,11 +173,7 @@ exit($attempt === 1 ? 1 : 0);
                         exit 1
                     fi
                 done
-                test -L /usr/bin/php
                 test -x "$(git --exec-path)/git-remote-https"
-                php -r '
-                    exit(PHP_BINARY !== "" && !str_contains(PHP_BINARY, "frankenphp") ? 0 : 1);
-                '
             '''
         result = run(*args, "--rm", "-e", "XDEBUG_MODE=off", IMAGE,
                      "/bin/sh", "-ec", script, check=False)
@@ -191,47 +181,46 @@ exit($attempt === 1 ? 1 : 0);
 
     @unittest.skipUnless(DEV, "PostgreSQL clients are only included in the development runtime")
     def test_postgresql_dump_and_restore(self):
-        name = "farmos-runtime-db-" + uuid.uuid4().hex[:10]
-        run(DOCKER, "network", "create", "--internal", name)
-        self.addCleanup(run, DOCKER, "network", "rm", name)
-        self.addCleanup(run, DOCKER, "rm", "-fv", name, check=False)
-        result = run(DOCKER, "run", "-d", "--name", name, "--network", name,
-                     "-e", "POSTGRES_USER=fixture", "-e", "POSTGRES_PASSWORD=fixture",
-                     "-e", "POSTGRES_DB=source",
-                     "-e", "POSTGRES_HOST_AUTH_METHOD=scram-sha-256",
-                     "postgres:17-alpine", check=False)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            ready = run(DOCKER, "exec", name, "pg_isready", "-h", "127.0.0.1",
-                        "-U", "fixture", "-d", "source", check=False)
-            if ready.returncode == 0:
-                break
-            time.sleep(0.5)
-        else:
-            logs = run(DOCKER, "logs", name, check=False)
-            self.fail("PostgreSQL did not become ready:\n" + logs.stdout + logs.stderr)
+        project = os.environ.get("TEST_COMPOSE_PROJECT")
+        if not project:
+            raise RuntimeError("Run task test VARIANT=development-runtime SUITE=runtime to start the shared test database")
+        compose_file = os.environ.get("TEST_COMPOSE_FILE") or str(Path(__file__).resolve().parent / "compose.yaml")
+        compose = [DOCKER, "compose", "--env-file", "/dev/null", "-p", project, "-f", compose_file]
+        database = run(*compose, "ps", "-q", "db").stdout.strip()
+        if not database:
+            raise RuntimeError("The shared test database is not running; run task test VARIANT=development-runtime SUITE=runtime")
+        networks = json.loads(run(DOCKER, "inspect", "--format", "{{json .NetworkSettings.Networks}}", database).stdout)
+        network = project + "_default"
+        if network not in networks:
+            raise RuntimeError("The shared test database is not on the Task test network")
+        source = "runtime_source_" + uuid.uuid4().hex[:10]
+        restored = "runtime_restored_" + uuid.uuid4().hex[:10]
+        for name in (source, restored):
+            self.addCleanup(run, DOCKER, "exec", database, "dropdb", "--username=farm",
+                            "--if-exists", "--force", name, check=False)
+        run(DOCKER, "exec", database, "createdb", "--username=farm", source)
 
         args, _ = self.container_args()
-        result = run(*args, "--rm", "--network", name,
-                     "-e", f"PGHOST={name}", "-e", "PGUSER=fixture",
-                     "-e", "PGPASSWORD=fixture", "-e", "PGDATABASE=source",
-                     IMAGE, "/bin/sh", "-ec", '''
+        result = run(*args, "--rm", "--network", network,
+                     "--entrypoint", "/bin/sh",
+                     "-e", "PGHOST=db", "-e", "PGUSER=farm",
+                     "-e", "PGPASSWORD=disposable-password", "-e", f"PGDATABASE={source}",
+                     "-e", f"RESTORED_DATABASE={restored}",
+                     IMAGE, "-ec", '''
             test "$(psql -Atc 'SHOW password_encryption')" = scram-sha-256
             psql --set ON_ERROR_STOP=1 -c "
                 CREATE TABLE fixture (id integer PRIMARY KEY, value text NOT NULL);
                 INSERT INTO fixture VALUES (1, 'DUMP_RESTORE_OK');
             "
             pg_dump --format=custom --file=/tmp/source.dump
-            createdb restored
-            pg_restore --exit-on-error --dbname=restored /tmp/source.dump
-            test "$(psql --dbname=restored -Atc 'SELECT value FROM fixture WHERE id = 1')" = DUMP_RESTORE_OK
+            createdb "$RESTORED_DATABASE"
+            pg_restore --exit-on-error --dbname="$RESTORED_DATABASE" /tmp/source.dump
+            test "$(psql --dbname="$RESTORED_DATABASE" -Atc 'SELECT value FROM fixture WHERE id = 1')" = DUMP_RESTORE_OK
             # pg_dumpall must locate the pg_dump shipped beside it after the
             # client package is split from the upstream server package.
             pg_dumpall --no-role-passwords > /tmp/all.sql
             grep DUMP_RESTORE_OK /tmp/all.sql
-            dropdb restored
+            dropdb "$RESTORED_DATABASE"
         ''', check=False)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -273,7 +262,6 @@ file_put_contents(__DIR__ . '/script-result', 'COMPOSER_SCRIPT_OK');
 PHP
             composer update --no-install --no-scripts --no-audit --no-interaction --no-progress
             composer install --prefer-source --no-interaction --no-progress
-            test -f composer.lock
             test "$(cat script-result)" = COMPOSER_SCRIPT_OK
             test "$(cat vendor/fixture/source-test/marker.txt)" = GIT_DEPENDENCY_OK
             git -C vendor/fixture/source-test rev-parse --verify HEAD

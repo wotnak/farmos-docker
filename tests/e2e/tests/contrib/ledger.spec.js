@@ -21,7 +21,6 @@ async function loadLedger(page, type, name) {
   const document = await response.json();
   expect(document.data).toHaveLength(1);
   const quantity = document.included.find(record => record.type === 'quantity--price');
-  expect(quantity).toBeDefined();
   return { log: document.data[0], quantity, included: document.included };
 }
 

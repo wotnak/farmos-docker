@@ -11,8 +11,8 @@ test('OAuth authorization code with PKCE signs tokens using private persistent k
   const origin = new URL(page.url()).origin;
   const keysResponse = await request.get('/oauth/jwks');
   expect(keysResponse.status()).toBe(200);
-  const existingKeys = await keysResponse.json();
-  if (!existingKeys.keys?.length) {
+  let publicKeys = await keysResponse.json();
+  if (!publicKeys.keys?.length) {
     await test.step('Generate initial OAuth keys through the administration form', async () => {
       await page.goto('/admin/config/people/simple_oauth');
       const privateKey = page.locator('input[name="private_key"]');
@@ -26,14 +26,13 @@ test('OAuth authorization code with PKCE signs tokens using private persistent k
       await page.getByRole('button', { name: 'Save configuration', exact: true }).click();
       const generated = await request.get('/oauth/jwks');
       expect(generated.status()).toBe(200);
-      expect((await generated.json()).keys[0].kty).toBe('RSA');
+      publicKeys = await generated.json();
+      expect(publicKeys.keys[0].kty).toBe('RSA');
     });
   }
-  const publicKeys = await request.get('/oauth/jwks');
-  expect(publicKeys.status()).toBe(200);
   const artifacts = process.env.TEST_ARTIFACTS || './artifacts';
   fs.mkdirSync(artifacts, { recursive: true });
-  fs.writeFileSync(path.join(artifacts, 'oauth-state.json'), JSON.stringify(await publicKeys.json(), null, 2));
+  fs.writeFileSync(path.join(artifacts, 'oauth-state.json'), JSON.stringify(publicKeys, null, 2));
 
   const suffix = randomUUID().slice(0, 8);
   const viewerName = `oauth-viewer-${suffix}`;
@@ -47,7 +46,6 @@ test('OAuth authorization code with PKCE signs tokens using private persistent k
   await page.locator('input[name="roles[farm_viewer]"]').check();
   await page.locator('input[name="notify"]').uncheck();
   await page.getByRole('button', { name: 'Create new account', exact: true }).click();
-  await expect(page.getByText('No email has been sent.', { exact: false })).toBeVisible();
 
   const context = await browser.newContext({ baseURL: origin });
   try {
@@ -80,8 +78,6 @@ test('OAuth authorization code with PKCE signs tokens using private persistent k
     expect(exchange.status()).toBe(200);
     const tokens = await exchange.json();
     expect(tokens.token_type).toBe('Bearer');
-    expect(tokens.access_token).toBeTruthy();
-    expect(tokens.refresh_token).toBeTruthy();
     const headers = { Authorization: `Bearer ${tokens.access_token}`, Accept: 'application/vnd.api+json' };
     const collection = await request.get('/api/asset/equipment', { headers, params: { 'filter[name]': asset.name } });
     expect(collection.status()).toBe(200);

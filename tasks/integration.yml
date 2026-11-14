@@ -1,0 +1,125 @@
+version: '3'
+
+tasks:
+  run:
+    dir: '{{.ROOT_DIR}}'
+    vars:
+      RUN_ID:
+        sh: python3 -c 'import uuid; print(uuid.uuid4().hex[:12])'
+      PROJECT: 'farmos-tests-{{.SUITE}}-{{.RUN_ID}}'
+      ARTIFACT_ROOT:
+        sh: >-
+          python3 -c 'import os,pathlib,sys; print(pathlib.Path(os.environ.get("TEST_ARTIFACTS") or sys.argv[1]).resolve())'
+          {{printf "%s/build/tests/%s" .ROOT_DIR .SUITE | shellQuote}}
+      ARTIFACTS: '{{.ARTIFACT_ROOT}}/run-{{.RUN_ID}}'
+      APP_PROJECT:
+        sh: >-
+          python3 -c 'import os,pathlib,sys; print(pathlib.Path(os.environ.get("FARMOS_PROJECT_PATH") or sys.argv[1]).resolve())'
+          {{printf "%s/project" .ARTIFACTS | shellQuote}}
+      CACHE:
+        sh: >-
+          python3 -c 'import os,pathlib,sys; print(pathlib.Path(os.environ.get("COMPOSER_CACHE_PATH") or sys.argv[1]).resolve())'
+          {{printf "%s/build/tests/contrib/composer-cache" .ROOT_DIR | shellQuote}}
+      REMOVE_PROJECT:
+        sh: python3 -c 'import os; print("0" if os.environ.get("FARMOS_PROJECT_PATH") else "1")'
+      RUNTIME_DEV:
+        sh: python3 -c 'import os; print("1" if os.environ.get("DEV") == "1" else "0")'
+      IMAGE_VARIANT: >-
+        {{if or (eq .SUITE "phpunit") (eq .SUITE "contrib-ci")}}development
+        {{else if eq .SUITE "contrib"}}runtime
+        {{else if eq .SUITE "runtime"}}{{if eq .RUNTIME_DEV "1"}}development-runtime{{else}}runtime{{end}}
+        {{else}}production{{end}}
+      TEST_IMAGE:
+        sh: '{{.LOCAL}} --variant {{.IMAGE_VARIANT | trim | shellQuote}} image'
+      CONTRIB_DEV_IMAGE:
+        sh: '{{if eq .SUITE "contrib"}}{{.LOCAL}} --variant development-runtime image{{else}}printf ""{{end}}'
+      SERVICE: >-
+        {{if eq .SUITE "phpunit"}}phpunit{{else if eq .SUITE "e2e"}}farmos
+        {{else if eq .SUITE "contrib-ci"}}ci{{else if eq .SUITE "contrib"}}farmos-contrib
+        {{else if eq .SUITE "http"}}web{{else}}db{{end}}
+      BASE: '{{if eq .SUITE "contrib"}}http://farmos-contrib:8080{{else}}http://farmos:8080{{end}}'
+      HOST_UID:
+        sh: id -u
+      HOST_GID:
+        sh: id -g
+      CONTEXT: >-
+        env IMAGE={{.TEST_IMAGE | trim | shellQuote}} DB_TEST_IMAGE={{.TEST_IMAGE | trim | shellQuote}}
+        RUNTIME_IMAGE={{if eq .SUITE "contrib"}}{{.TEST_IMAGE | trim | shellQuote}}{{else}}''{{end}}
+        DEV_RUNTIME_IMAGE={{.CONTRIB_DEV_IMAGE | shellQuote}}
+        TEST_COMPOSE_PROJECT={{.PROJECT | shellQuote}} TEST_COMPOSE_FILE={{printf "%s/tests/compose.yaml" .ROOT_DIR | shellQuote}}
+        TEST_SUITE={{.SUITE | shellQuote}} TEST_SERVICE={{.SERVICE | trim | shellQuote}}
+        TEST_ARTIFACTS={{.ARTIFACTS | shellQuote}} BASE_URL={{.BASE | shellQuote}}
+        FARMOS_PROJECT_PATH={{.APP_PROJECT | shellQuote}} COMPOSER_CACHE_PATH={{.CACHE | shellQuote}}
+        LOCAL_UID={{.HOST_UID | shellQuote}} LOCAL_GID={{.HOST_GID | shellQuote}}
+      COMPOSE: >-
+        {{.CONTEXT}}
+        docker compose --env-file /dev/null --project-name {{.PROJECT | shellQuote}}
+        --file {{printf "%s/tests/compose.yaml" .ROOT_DIR | shellQuote}} --profile {{.SUITE | shellQuote}}
+    preconditions:
+    - sh: 'case {{.SUITE | shellQuote}} in phpunit|e2e|contrib-ci|contrib|database|runtime|http) exit 0;; *) exit 1;; esac'
+      msg: Unsupported integration test suite
+    cmds:
+    - mkdir -p {{.ARTIFACTS | shellQuote}}
+    - defer: >-
+        printf 'Test artifacts: %s\n' {{.ARTIFACTS | shellQuote}}
+    - defer:
+        task: cleanup
+        vars:
+          COMPOSE: '{{.COMPOSE}}'
+          ARTIFACTS: '{{.ARTIFACTS}}'
+          SUITE: '{{.SUITE}}'
+          APP_PROJECT: '{{.APP_PROJECT}}'
+          REMOVE_PROJECT: '{{.REMOVE_PROJECT}}'
+    - docker image inspect {{.TEST_IMAGE | trim | shellQuote}} > {{printf "%s/image.json" .ARTIFACTS | shellQuote}}
+    - '{{.COMPOSE}} config > {{printf "%s/compose.yaml" .ARTIFACTS | shellQuote}}'
+    - |
+        set -e
+        set -o pipefail
+        {{if eq .SUITE "contrib"}}
+        {{.CONTEXT}} bash tests/e2e/scripts/contrib-prepare.sh 2>&1 | tee {{printf "%s/composer-install.log" .ARTIFACTS | shellQuote}}
+        {{end}}
+        {{if or (ne .SUITE "runtime") (eq .RUNTIME_DEV "1")}}
+        {{.COMPOSE}} up --detach --wait --wait-timeout 180 {{.SERVICE | trim | shellQuote}}
+        {{end}}
+    - |
+        set -e
+        set -o pipefail
+        case {{.SUITE | shellQuote}} in
+          phpunit)
+            {{.COMPOSE}} exec -T phpunit /bin/sh -ec 'chmod -R u+w web/sites; mkdir -p /tmp/phpunit/browser-output'
+            {{.COMPOSE}} exec -T phpunit /usr/bin/php vendor/bin/phpunit \
+              --configuration /opt/farmos/phpunit.xml \
+              --fail-on-empty-test-suite --fail-on-skipped --fail-on-incomplete \
+              --display-skipped --display-incomplete \
+              --log-junit /tmp/phpunit/junit.xml {{.CLI_ARGS}} /opt/farmos/web/profiles/farm \
+              2>&1 | tee {{printf "%s/phpunit.log" .ARTIFACTS | shellQuote}}
+            ;;
+          e2e) {{.CONTEXT}} bash tests/e2e/scripts/test.sh ;;
+          contrib) {{.CONTEXT}} bash tests/e2e/scripts/contrib-test.sh ;;
+          contrib-ci) {{.CONTEXT}} bash tests/contrib-ci-test.sh ;;
+          database) {{.CONTEXT}} python3 tests/test-database-settings.py {{.CLI_ARGS}} ;;
+          runtime) {{.CONTEXT}} python3 tests/runtime-image-test.py {{.CLI_ARGS}} ;;
+          http) {{.CONTEXT}} python3 tests/test-docker-setup.py {{.CLI_ARGS}} ;;
+        esac
+    - task: cleanup
+      vars:
+        COMPOSE: '{{.COMPOSE}}'
+        ARTIFACTS: '{{.ARTIFACTS}}'
+        SUITE: '{{.SUITE}}'
+        APP_PROJECT: '{{.APP_PROJECT}}'
+        REMOVE_PROJECT: '{{.REMOVE_PROJECT}}'
+
+  cleanup:
+    run: once
+    cmds:
+    - '{{.COMPOSE}} ps --all > {{printf "%s/containers.txt" .ARTIFACTS | shellQuote}} 2>&1 || true'
+    - '{{.COMPOSE}} logs --no-color > {{printf "%s/compose.log" .ARTIFACTS | shellQuote}} 2>&1 || true'
+    - |
+        {{if eq .SUITE "phpunit"}}
+        {{.COMPOSE}} cp phpunit:/tmp/phpunit/. {{.ARTIFACTS | shellQuote}} >/dev/null 2>&1 || true
+        {{.COMPOSE}} cp phpunit:/opt/farmos/web/sites/simpletest/browser_output/. {{printf "%s/browser-output/" .ARTIFACTS | shellQuote}} >/dev/null 2>&1 || true
+        {{end}}
+    - '{{.COMPOSE}} --profile "*" down --volumes --remove-orphans > {{printf "%s/cleanup.log" .ARTIFACTS | shellQuote}} 2>&1'
+    - >-
+        {{if and (eq .SUITE "contrib") (eq .REMOVE_PROJECT "1")}}
+        rm -rf -- {{.APP_PROJECT | shellQuote}}{{else}}true{{end}}

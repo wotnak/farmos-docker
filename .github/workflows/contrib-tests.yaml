@@ -39,7 +39,7 @@ jobs:
         with:
           version: '3.53.1'
       - name: Install and test all seven modules, including both planning modules
-        run: task contrib-test
+        run: task test SUITE=contrib
       - name: Save reports, dependency lock and container logs
         if: always()
         uses: actions/upload-artifact@v7

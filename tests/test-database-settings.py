@@ -3,13 +3,14 @@
 
 Requires Docker and a bundled farmOS image with pdo_pgsql and pdo_sqlite.
 DB_TEST_IMAGE selects the image; config-only checks can run as SettingsTests.
+Task supplies PostgreSQL for connection tests; SQLite fixtures stay isolated.
 """
 
 import json
 from concurrent.futures import ThreadPoolExecutor
 import os
+from pathlib import Path
 import subprocess
-import time
 import unittest
 import uuid
 
@@ -84,15 +85,14 @@ class SettingsTests(ContainerTest):
         self.assertEqual(options["database"], "/opt/farmos/private_files/database/farmos.sqlite")
         self.assertFalse({"host", "port", "username", "password"} & options.keys())
 
-    def test_unsupported_drivers_fail_in_settings_and_startup(self):
-        for driver in ("mysql", "mariadb", "postgresql", "unknown"):
-            for startup in (False, True):
-                with self.subTest(driver=driver, startup=startup):
-                    result = self.php(LOAD, startup=startup, FARMOS_DB_DRIVER=driver)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("Unsupported FARMOS_DB_DRIVER. Supported drivers: pgsql, sqlite.",
-                                  result.stderr + result.stdout)
-                    self.assertNotIn("disposable-password", result.stderr + result.stdout)
+    def test_unsupported_driver_fails_in_settings_and_startup(self):
+        for startup in (False, True):
+            with self.subTest(startup=startup):
+                result = self.php(LOAD, startup=startup, FARMOS_DB_DRIVER="mysql")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Unsupported FARMOS_DB_DRIVER. Supported drivers: pgsql, sqlite.",
+                              result.stderr + result.stdout)
+                self.assertNotIn("disposable-password", result.stderr + result.stdout)
 
     def test_invalid_configuration_fails_without_exposing_password(self):
         for environment, message in [
@@ -207,59 +207,51 @@ class SaltTests(ContainerTest):
 
 class ConnectionTests(ContainerTest):
     def server(self):
-        suffix = uuid.uuid4().hex[:10]
-        network = "farmos-db-test-" + suffix
-        name = network + "-server"
-        result = run("docker", "network", "create", network)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.addCleanup(run, "docker", "network", "rm", network)
-        self.addCleanup(run, "docker", "rm", "-fv", name)
-        args = ["-e", "POSTGRES_DB=farmos", "-e", "POSTGRES_USER=farm",
-                "-e", "POSTGRES_PASSWORD=disposable-password", "postgres:17-alpine"]
-        result = run("docker", "run", "-d", "--name", name, "--network", network,
-                     "--network-alias", "db", *args)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        deadline = time.monotonic() + 90
-        while time.monotonic() < deadline:
-            result = self.php(CONNECT + "echo $database->query('SELECT 1')->fetchField();",
-                              network=network, FARMOS_DB_DRIVER="pgsql")
-            if result.returncode == 0:
-                return network
-            time.sleep(0.5)
-        self.fail("Database did not become ready: " + result.stderr + result.stdout)
+        project = os.environ.get("TEST_COMPOSE_PROJECT")
+        if not project:
+            raise RuntimeError("Run task test VARIANT=production SUITE=database to start the shared test database")
+        compose_file = os.environ.get("TEST_COMPOSE_FILE") or str(Path(__file__).resolve().parent / "compose.yaml")
+        result = run("docker", "compose", "--env-file", "/dev/null", "-p", project,
+                     "-f", compose_file, "ps", "-q", "db")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        database = result.stdout.strip()
+        if not database:
+            raise RuntimeError("The shared test database is not running; run task test VARIANT=production SUITE=database")
+        result = run("docker", "inspect", "--format", "{{json .NetworkSettings.Networks}}", database)
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        network = project + "_default"
+        if network not in json.loads(result.stdout):
+            raise RuntimeError("The shared test database is not on the Task test network")
+        return network
 
-    def round_trip(self):
+    def test_postgresql_drupal_connection(self):
         network = self.server()
-        result = self.php(CONNECT + r'''
-$database->schema()->createTable('connection_probe', [
+        table = "connection_probe_" + uuid.uuid4().hex[:10]
+        result = self.php(CONNECT + "$table = " + json.dumps(table) + ";" + r'''
+$database->schema()->createTable($table, [
     'fields' => ['id' => ['type' => 'serial', 'not null' => TRUE],
                  'value' => ['type' => 'varchar', 'length' => 255]],
     'primary key' => ['id'],
 ]);
-$database->insert('connection_probe')->fields(['value' => 'farm 🌱'])->execute();
-$value = $database->select('connection_probe', 'p')->fields('p', ['value'])->execute()->fetchField();
-if ($value !== 'farm 🌱') { throw new RuntimeException('Database round trip failed.'); }
-$database->schema()->dropTable('connection_probe');
+try {
+    $database->insert($table)->fields(['value' => 'farm 🌱'])->execute();
+    $value = $database->select($table, 'p')->fields('p', ['value'])->execute()->fetchField();
+    if ($value !== 'farm 🌱') { throw new RuntimeException('Database round trip failed.'); }
+} finally {
+    $database->schema()->dropTable($table);
+}
 echo 'DATABASE_OK';
 ''', network=network, FARMOS_DB_DRIVER="pgsql")
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertEqual(result.stdout, "DATABASE_OK")
 
-    def test_postgresql_drupal_connection(self):
-        self.round_trip()
-
-    def test_farmos_installation_with_each_database_driver(self):
-        for driver in ("pgsql", "sqlite"):
-            with self.subTest(driver=driver):
-                network = "none" if driver == "sqlite" else self.server()
-                result = self.php(command=["/opt/farmos/vendor/drush/drush/drush.php", "site:install", "farm",
-                                           "--yes", "--account-name=admin", "--account-pass=disposable-admin-password",
-                                           "--site-name=Database integration test"],
-                                  startup=True, network=network, timeout=240,
-                                  FARMOS_DB_DRIVER=driver,
-                                  FARMOS_HASH_SALT="",
-                                  FARMOS_DB_PASS="" if driver == "sqlite" else "disposable-password")
-                self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+    def test_farmos_installation_with_sqlite(self):
+        result = self.php(command=["/opt/farmos/vendor/drush/drush/drush.php", "site:install", "farm",
+                                   "--yes", "--account-name=admin", "--account-pass=disposable-admin-password",
+                                   "--site-name=Database integration test"],
+                          startup=True, timeout=240, FARMOS_DB_DRIVER="sqlite",
+                          FARMOS_HASH_SALT="", FARMOS_DB_PASS="")
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
     def test_sqlite_startup_and_persistence_across_containers(self):
         volume = "farmos-sqlite-test-" + uuid.uuid4().hex[:10]

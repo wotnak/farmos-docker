@@ -123,7 +123,6 @@ jobs:
       CONFIGURATION: .build-inputs/build.json
       BUILD_ENVIRONMENT_ID: ${{ needs.prepare.outputs.environment-id }}
       IMAGE_REPOSITORY: ${{ needs.prepare.outputs.image-name }}
-      IMAGE: ${{ matrix.image }}
       IMAGE_OUTPUT: ${{ matrix.output }}
       IMAGE_VARIANT: ${{ matrix.variant }}
       NIX_SYSTEM: ${{ matrix.system }}
@@ -149,33 +148,31 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
           password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
       - name: Build and load image
-        run: task load-prepared VARIANT="$IMAGE_VARIANT"
+        run: task load VARIANT="$IMAGE_VARIANT" PREPARED=true
       - name: Test image runtime
-        run: task test-loaded VARIANT="$IMAGE_VARIANT" SUITE="${{ matrix.suite }}"
+        run: task test VARIANT="$IMAGE_VARIANT" SUITE="${{ matrix.suite }}" LOADED=true
       - name: Test database settings and connections
         if: matrix.variant == 'production'
         timeout-minutes: 10
-        env:
-          DB_TEST_IMAGE: ${{ matrix.image }}
-        run: task database-test-loaded
+        run: task test VARIANT=production SUITE=database LOADED=true
       - name: Test farmOS installation, core workflows and persistence
         if: matrix.variant == 'production'
         timeout-minutes: 30
         env:
           TEST_ARTIFACTS: ${{ runner.temp }}/acceptance-tests
-        run: task e2e-test-loaded
+        run: task test VARIANT=production SUITE=e2e LOADED=true
       - name: Run upstream farmOS PHPUnit tests
         if: matrix.variant == 'development'
         timeout-minutes: 60
         env:
           TEST_ARTIFACTS: ${{ runner.temp }}/phpunit-tests
-        run: task phpunit-test-loaded
+        run: task test VARIANT=development SUITE=phpunit LOADED=true
       - name: Verify contributed module CI commands
         if: matrix.variant == 'development'
         timeout-minutes: 30
         env:
           TEST_ARTIFACTS: ${{ runner.temp }}/contrib-ci-tests
-        run: task contrib-ci-test-loaded
+        run: task test VARIANT=development SUITE=contrib-ci LOADED=true
       - name: Save application test reports
         if: always() && (matrix.variant == 'production' || matrix.variant == 'development')
         uses: actions/upload-artifact@v7

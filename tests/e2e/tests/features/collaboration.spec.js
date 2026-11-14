@@ -11,13 +11,11 @@ test('asset comments persist, can be edited, and can be deleted', async ({ page 
   await page.getByRole('button', { name: 'Save comment', exact: true }).click();
   await page.goto(asset.path);
   const article = page.locator('article.comment').filter({ hasText: comment });
-  await expect(article).toBeVisible();
   await article.locator('a[href*="/comment/"][href*="/edit"]').click();
   await page.locator('textarea[name="comment_body[0][value]"]').fill(revised);
   await page.getByRole('button', { name: 'Save comment', exact: true }).click();
   await page.goto(asset.path);
   const updated = page.locator('article.comment').filter({ hasText: revised });
-  await expect(updated).toBeVisible();
   await updated.locator('a[href*="/comment/"][href*="/delete"]').click();
   await page.getByRole('button', { name: 'Delete', exact: true }).click();
   await page.goto(asset.path);

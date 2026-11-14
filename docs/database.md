@@ -89,14 +89,14 @@ Review this template before replacing a project's custom settings.
 
 ## Verification
 
-`task database-test` builds the production image and tests settings validation,
-real PostgreSQL connections through Drupal's database API, farmOS
-installation with both drivers, and SQLite writes that survive container
-replacement. CI runs the same checks on both image
-architectures before publication.
+`task test VARIANT=production SUITE=database` builds the production image and
+tests settings validation, real PostgreSQL connections through Drupal's database
+API, SQLite installation, and SQLite writes that survive container replacement.
+The browser suite covers PostgreSQL installation. CI runs these checks on both
+image architectures before publication.
 
 To test a loaded image directly:
 
 ```sh
-DB_TEST_IMAGE=ghcr.io/wotnak/farmos:4 python3 tests/test-database-settings.py
+task test VARIANT=production SUITE=database LOADED=true
 ```
