@@ -42,7 +42,7 @@ def snapshot(root: Path) -> Path:
     if _kind(root) != "directory":
         raise ValueError(f"Expected a source directory: {root}")
     root = root.resolve()
-    sources = [("flake.nix", "file"), ("versions.json", "file"),
+    sources = [("flake.nix", "file"),
                ("packages", "directory"), ("images", "directory"),
                ("tests/check-runtime.php", "file")]
     # Inspect source ancestors too, so tests/ cannot redirect the required file.

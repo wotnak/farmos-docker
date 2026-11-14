@@ -1,0 +1,230 @@
+name: Build images
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Build environment
+        type: environment
+        required: true
+      publish:
+        description: Publish public tags after all builds and tests pass
+        type: boolean
+        required: false
+        default: true
+  workflow_call:
+    inputs:
+      environment:
+        description: Build environment
+        type: string
+        required: true
+      publish:
+        description: Publish public tags after all builds and tests pass
+        type: boolean
+        required: false
+        default: true
+
+concurrency:
+  group: build-images-${{ inputs.environment }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+jobs:
+  prepare:
+    name: Prepare ${{ inputs.environment }}
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      environment-id: ${{ steps.configuration.outputs.environment-id }}
+      artifact: ${{ steps.configuration.outputs.artifact }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+      image-name: ${{ steps.plan.outputs.image-name }}
+      registry: ${{ steps.plan.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read and validate build profile
+        id: configuration
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_ENVIRONMENT: ${{ inputs.environment }}
+          FARMOS_VERSION: ${{ vars.FARMOS_VERSION }}
+          FARMOS_IMAGE_NAME: ${{ vars.FARMOS_IMAGE_NAME }}
+          FARMOS_IMAGE_TAG: ${{ vars.FARMOS_IMAGE_TAG }}
+          FARMOS_REPOSITORY: ${{ vars.FARMOS_REPOSITORY }}
+          FARMOS_IMAGE_VARIANTS: ${{ vars.FARMOS_IMAGE_VARIANTS }}
+        run: |
+          encoded=$(python3 -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["BUILD_ENVIRONMENT"], safe=""))')
+          identifier=$(gh api "repos/$GITHUB_REPOSITORY/environments/$encoded" --jq '.id')
+          python3 scripts/build_environments.py select > "$RUNNER_TEMP/configuration.json"
+          echo "environment-id=$identifier" >> "$GITHUB_OUTPUT"
+          echo "artifact=build-inputs-env-$identifier" >> "$GITHUB_OUTPUT"
+      - uses: cachix/install-nix-action@v31
+      - uses: go-task/setup-task@v2
+        with:
+          version: '3.53.1'
+      - name: Resolve fresh build dependencies
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NIX_SYSTEM: x86_64-linux
+        run: task prepare-inputs CONFIGURATION="$RUNNER_TEMP/configuration.json"
+      - name: Select image builds
+        id: plan
+        shell: bash
+        run: |
+          configuration=.build-inputs/build.json
+          matrix=$(python3 scripts/build_environments.py build-matrix --configuration "$configuration" | jq -c .)
+          image_name=$(jq -r '."image-name"' "$configuration")
+          first=${image_name%%/*}
+          case "$image_name" in
+            */*)
+              case "$first" in
+                *.*|*:*|localhost) registry=$first ;;
+                *) registry=docker.io ;;
+              esac ;;
+            *) registry=docker.io ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "image-name=$image_name" >> "$GITHUB_OUTPUT"
+          echo "registry=$registry" >> "$GITHUB_OUTPUT"
+      - name: Share resolved build inputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.configuration.outputs.artifact }}
+          path: |
+            .build-inputs/
+            flake.lock
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  build:
+    name: Build ${{ inputs.environment }} · ${{ matrix.variant }} · ${{ matrix.arch }}
+    needs: prepare
+    environment: ${{ inputs.environment }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      CONFIGURATION: .build-inputs/build.json
+      BUILD_ENVIRONMENT_ID: ${{ needs.prepare.outputs.environment-id }}
+      IMAGE_REPOSITORY: ${{ needs.prepare.outputs.image-name }}
+      IMAGE: ${{ matrix.image }}
+      IMAGE_OUTPUT: ${{ matrix.output }}
+      IMAGE_VARIANT: ${{ matrix.variant }}
+      NIX_SYSTEM: ${{ matrix.system }}
+      IMAGE_ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Download resolved build inputs
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: .
+      - uses: cachix/install-nix-action@v31
+      - uses: go-task/setup-task@v2
+        with:
+          version: '3.53.1'
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ matrix.system }}-env-${{ needs.prepare.outputs.environment-id }}-${{ matrix.output }}-${{ hashFiles('flake.nix', 'flake.lock', '.build-inputs/**', 'packages/**', 'images/**', 'scripts/**', 'tests/check-runtime.php') }}
+          restore-prefixes-first-match: nix-${{ matrix.system }}-env-${{ needs.prepare.outputs.environment-id }}-${{ matrix.output }}-
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ needs.prepare.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+      - name: Build and load image
+        run: task load-prepared VARIANT="$IMAGE_VARIANT"
+      - name: Test image runtime
+        run: task test-loaded VARIANT="$IMAGE_VARIANT" SUITE="${{ matrix.suite }}"
+      - name: Test database settings and connections
+        if: matrix.variant == 'production'
+        timeout-minutes: 10
+        env:
+          DB_TEST_IMAGE: ${{ matrix.image }}
+        run: task database-test-loaded
+      - name: Test farmOS installation, core workflows and persistence
+        if: matrix.variant == 'production'
+        timeout-minutes: 30
+        env:
+          TEST_ARTIFACTS: ${{ runner.temp }}/acceptance-tests
+        run: task e2e-test-loaded
+      - name: Run upstream farmOS PHPUnit tests
+        if: matrix.variant == 'development'
+        timeout-minutes: 60
+        env:
+          TEST_ARTIFACTS: ${{ runner.temp }}/phpunit-tests
+        run: task phpunit-test-loaded
+      - name: Verify contributed module CI commands
+        if: matrix.variant == 'development'
+        timeout-minutes: 30
+        env:
+          TEST_ARTIFACTS: ${{ runner.temp }}/contrib-ci-tests
+        run: task contrib-ci-test-loaded
+      - name: Save application test reports
+        if: always() && (matrix.variant == 'production' || matrix.variant == 'development')
+        uses: actions/upload-artifact@v7
+        with:
+          name: application-tests-env-${{ needs.prepare.outputs.environment-id }}-${{ matrix.output }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/acceptance-tests/
+            ${{ runner.temp }}/phpunit-tests/
+            ${{ runner.temp }}/contrib-ci-tests/
+          if-no-files-found: warn
+          retention-days: 14
+          overwrite: true
+      - name: Push tested architecture image
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          candidate="build-${BUILD_ENVIRONMENT_ID}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${IMAGE_OUTPUT}-${IMAGE_ARCH}"
+          nix --extra-experimental-features "nix-command flakes" \
+            run --system "$NIX_SYSTEM" "path:./build/nix-source#\"$IMAGE_OUTPUT\".copyTo" -- \
+            --format oci --digestfile "$RUNNER_TEMP/digests/${IMAGE_OUTPUT}-${IMAGE_ARCH}.txt" \
+            "docker://${IMAGE_REPOSITORY}:${candidate}"
+      - name: Share architecture digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: image-digest-env-${{ needs.prepare.outputs.environment-id }}-${{ matrix.output }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    name: Publish ${{ inputs.environment }}
+    needs: [prepare, build]
+    if: inputs.publish
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: .
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ needs.prepare.outputs.registry }}
+          username: ${{ secrets.REGISTRY_USERNAME || github.actor }}
+          password: ${{ secrets.REGISTRY_PASSWORD || secrets.GITHUB_TOKEN }}
+      - name: Download architecture digests
+        uses: actions/download-artifact@v8
+        with:
+          pattern: image-digest-env-${{ needs.prepare.outputs.environment-id }}-*
+          path: ${{ runner.temp }}/digests
+          merge-multiple: true
+      - name: Publish multi-platform tags
+        run: python3 scripts/publish-images --digests "$RUNNER_TEMP/digests"

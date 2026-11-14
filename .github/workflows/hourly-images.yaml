@@ -5,138 +5,48 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch:
 
-# A refresh may take longer than an hour. Finish it before starting another.
 concurrency:
   group: hourly-image-refresh
   cancel-in-progress: false
 
 permissions:
   contents: read
-
-env:
-  IMAGE_REPOSITORY: ${{ vars.IMAGE_REPOSITORY || 'ghcr.io/wotnak/farmos' }}
+  actions: read
 
 jobs:
-  prepare:
+  discover:
+    name: Discover environments
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
     outputs:
-      source-revision: ${{ steps.source.outputs.revision }}
-      release-matrix: ${{ steps.releases.outputs.matrix }}
+      matrix: ${{ steps.environments.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-      - name: Record source revision
-        id: source
-        run: echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Install Task
-        uses: go-task/setup-task@v2
-        with:
-          version: '3.53.1'
-      - name: Test build and publishing automation
-        run: task regression-test
-      - uses: cachix/install-nix-action@v31
-      - name: Resolve fresh dependencies for all releases and the development branch
+      - name: Discover configured environments
+        id: environments
         env:
           GH_TOKEN: ${{ github.token }}
-          NIX_SYSTEM: x86_64-linux
-        run: scripts/prepare-build
-      - name: Select resolved release majors
-        id: releases
-        run: echo "matrix=$(python3 scripts/releases.py --matrix)" >> "$GITHUB_OUTPUT"
-      - name: Share resolved build inputs with all image jobs
-        uses: actions/upload-artifact@v7
-        with:
-          name: build-inputs
-          path: |
-            .build-inputs/
-            flake.lock
-          include-hidden-files: true
-          if-no-files-found: error
-          retention-days: 7
-          overwrite: true
+        run: |
+          matrix=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/environments?per_page=100" |
+            python3 scripts/build_environments.py discover)
+          if [ "$(jq '.include | length' <<< "$matrix")" -eq 0 ]; then
+            echo '::error::Configure a GitHub Environment with FARMOS_VERSION and FARMOS_IMAGE_TAG before building images.'
+            exit 1
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
-  release-images:
-    needs: prepare
+  refresh:
+    name: Build ${{ matrix.environment }}
+    needs: discover
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.prepare.outputs.release-matrix) }}
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     permissions:
       contents: read
       packages: write
-      id-token: write
       actions: read
-    uses: ./.github/workflows/release-images.yaml
+    uses: ./.github/workflows/build-images.yaml
+    secrets: inherit
     with:
-      release-major: ${{ matrix.major }}
-      source-revision: ${{ needs.prepare.outputs.source-revision }}
-      build-inputs-artifact: build-inputs
-      publish: false
-
-  branch-image:
-    needs: prepare
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      actions: read
-    uses: ./.github/workflows/branch-image.yaml
-    with:
-      source-revision: ${{ needs.prepare.outputs.source-revision }}
-      build-inputs-artifact: build-inputs
-      publish: false
-
-  promote:
-    needs: [prepare, release-images, branch-image]
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-    env:
-      SOURCE_REVISION: ${{ needs.prepare.outputs.source-revision }}
-      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.prepare.outputs.source-revision }}
-      - uses: actions/download-artifact@v8
-        with:
-          name: build-inputs
-          path: .
-      - name: Prepare exact tested source
-        run: |
-          git add -f -- .build-inputs flake.lock
-          python3 scripts/image_evidence.py prepare-source
-          git add -- images/source.json
-      - uses: ./.github/actions/setup-image-evidence
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: image-evidence-*
-          path: ${{ runner.temp }}/children
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: index-evidence-*
-          path: ${{ runner.temp }}/indexes
-      - name: Recheck the complete refresh and promote public tags
-        run: |
-          python3 scripts/promote-images \
-            --indexes "$RUNNER_TEMP/indexes" --children "$RUNNER_TEMP/children" \
-            --destination "$RUNNER_TEMP/promotion"
-      - name: Save promotion report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: hourly-promotion
-          path: ${{ runner.temp }}/promotion/
-          if-no-files-found: warn
-          retention-days: 14
-          overwrite: true
-
+      environment: ${{ matrix.environment }}
+      publish: true

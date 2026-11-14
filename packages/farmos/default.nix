@@ -1,49 +1,23 @@
 {
   pkgs,
-  release ? null,
-  branch ? null,
-  releaseMajor ? pkgs.lib.versions.major release.version,
-  releaseComposerSnapshot ? null,
-  branchComposerSnapshot ? null,
+  profile,
+  composerSnapshot,
 }:
 
 let
   inherit (pkgs) lib;
-
-  farmosBranchTar = pkgs.fetchurl {
-    url = "https://github.com/farmOS/farmOS/archive/${branch.farmosRev}.tar.gz";
-    hash = branch.farmosSourceHash;
-  };
-
-  farmosBranchSource = pkgs.stdenvNoCC.mkDerivation {
-    pname = "farmos-4x-source";
-    version = "4.x";
-    src = farmosBranchTar;
-    dontPatchShebangs = true;
-    dontFixup = true;
-    installPhase = ''
-      runHook preInstall
-      mkdir -p $out
-      cp -a ./. $out/
-      runHook postInstall
-    '';
-  };
-
-  composerProjectTar = pkgs.fetchurl {
-    url = "https://github.com/farmOS/composer-project/archive/${branch.composerProjectRev}.tar.gz";
-    hash = branch.composerProjectHash;
-  };
-
   composerPhp = pkgs.php84.withExtensions (
     { all, enabled }:
-    enabled
-    ++ (with all; [
-      bcmath
-      exif
-      pdo_pgsql
-      simplexml
-    ])
+    enabled ++ (with all; [ bcmath exif pdo_pgsql simplexml ])
   );
+  template = builtins.fromJSON (builtins.readFile ./composer/project/composer.json);
+  repository = if profile.repository == null then null
+    else builtins.fromJSON profile.repository;
+  manifest = pkgs.writeText "farmos-composer.json" (builtins.toJSON (template // {
+    require = template.require // { "farmos/farmos" = profile."farmos-version"; };
+    repositories = lib.optional (repository != null) repository ++ template.repositories;
+  }));
+  version = lib.strings.sanitizeDerivationName (profile.resolved.version or "unresolved");
 
   allowComposerPlugins = ''
     for plugin in \
@@ -77,19 +51,13 @@ let
   mkComposerApp =
     {
       pname,
-      version,
-      src,
       outputHash,
-      composerSnapshot,
-      prepareSource ? "",
-      prepareComposer,
-      postInstall ? "",
       development ? true,
       resolveDependencies ? false,
     }:
     pkgs.stdenvNoCC.mkDerivation {
-      inherit pname version src postInstall;
-
+      inherit pname version;
+      src = ./composer/project;
       nativeBuildInputs = [
         composerPhp
         composerPhp.packages.composer
@@ -98,18 +66,16 @@ let
         pkgs.patch
         pkgs.unzip
       ];
-
       impureEnvVars = lib.fetchers.proxyImpureEnvVars;
       outputHashMode = "recursive";
       outputHashAlgo = "sha256";
       outputHash = if outputHash == "" then lib.fakeHash else outputHash;
-
       dontPatchShebangs = true;
       dontFixup = true;
 
       passthru = lib.optionalAttrs (!resolveDependencies) {
         resolveDependencies = mkComposerApp {
-          inherit pname version src composerSnapshot prepareSource prepareComposer development;
+          inherit pname development;
           outputHash = lib.fakeHash;
           resolveDependencies = true;
         };
@@ -124,13 +90,13 @@ let
         export COMPOSER_ALLOW_SUPERUSER=1
         mkdir -p "$HOME" "$COMPOSER_HOME" "$COMPOSER_CACHE_DIR"
 
-        ${prepareSource}
         ${if resolveDependencies then ''
+          cp ${manifest} composer.json
+          chmod u+w composer.json
           rm -f composer.lock
           composer config policy.advisories.block false
           composer config platform.ext-geos 1.0.0
           ${allowComposerPlugins}
-          ${prepareComposer}
           composer update --no-audit --no-interaction --no-progress --prefer-dist --with-all-dependencies
           php ${./save-composer-lock.php} ${composerPhp.packages.composer}
         '' else ''
@@ -150,56 +116,20 @@ let
         mkdir -p $out
         ${if resolveDependencies then "cp composer.json composer.lock $out/" else ''
           cp -a ./. $out/
-          # Source-only packages can include Git hooks with build-store paths.
           find "$out" -name .git -prune -exec rm -rf {} +
         ''}
         runHook postInstall
       '';
     };
-
-  releaseProject = {
-    version = release.version;
-    src = ./composer/project;
-    composerSnapshot = releaseComposerSnapshot;
-    prepareComposer = ''
-      composer require "farmos/farmos:${release.version}" \
-        --no-update --no-interaction \
-        --ignore-platform-req=ext-geos
-    '';
-  };
-
-  farmosRelease = mkComposerApp (releaseProject // {
-    pname = "farmos";
-    outputHash = release.prodHash;
-    development = false;
-  });
-
-  farmosReleaseDevelopment = mkComposerApp (releaseProject // {
-    pname = "farmos-dev";
-    outputHash = release.devHash;
-  });
-
-  farmosBranchDevelopment = mkComposerApp {
-    pname = "farmos-4x-dev";
-    version = "4.x";
-    src = composerProjectTar;
-    outputHash = branch.devHash;
-    composerSnapshot = branchComposerSnapshot;
-    prepareSource = ''
-      mkdir .farmos-source
-      cp -a ${farmosBranchSource}/. .farmos-source/
-      chmod -R u+w .farmos-source
-    '';
-    prepareComposer = ''
-      composer config repositories.farmos \
-        '{"type":"path","url":".farmos-source","options":{"symlink":false,"versions":{"farmos/farmos":"4.x-dev"}}}'
-      composer require "farmos/farmos:${branch.constraint}" \
-        --no-update --no-interaction \
-        --ignore-platform-req=ext-geos
-    '';
-  };
-
 in
 {
-  inherit farmosRelease farmosReleaseDevelopment farmosBranchDevelopment;
+  farmosProduction = mkComposerApp {
+    pname = "farmos";
+    outputHash = profile.prodHash;
+    development = false;
+  };
+  farmosDevelopment = mkComposerApp {
+    pname = "farmos-dev";
+    outputHash = profile.devHash;
+  };
 }

@@ -10,7 +10,6 @@ esac
 root=$(cd "$(dirname "$0")/.." && pwd)
 volume=${NIX_CACHE_VOLUME:-farmos-nix-build-cache}
 builder=${NIX_BUILDER_IMAGE:-nixos/nix:2.31.2}
-major=${RELEASE_MAJOR:-$(python3 "$root/scripts/releases.py" --field major)}
 # Refuse accidental creation of an empty volume after a typo.
 docker volume inspect "$volume" >/dev/null
 if [ -n "$(docker ps -q --filter "volume=$volume")" ]; then
@@ -18,10 +17,15 @@ if [ -n "$(docker ps -q --filter "volume=$volume")" ]; then
   exit 1
 fi
 
+outputs=
+if [ "$action" = prune ]; then
+  outputs=$(python3 "$root/scripts/local_build.py" --root "$root" --prepared cache-plan)
+fi
+
 docker run --rm \
   --mount "type=volume,source=$volume,target=/nix" \
   --mount "type=bind,source=$root,target=/work,readonly" \
-  --workdir /work -e CACHE_ACTION="$action" -e RELEASE_MAJOR="$major" \
+  --workdir /work -e CACHE_ACTION="$action" -e CACHE_OUTPUTS="$outputs" \
   "$builder" sh -eu -c '
     echo "Nix store before:"
     du -sh /nix/store
@@ -30,23 +34,26 @@ docker run --rm \
       nix-store --gc --print-roots | grep -v "^/proc/" || true
       exit 0
     fi
-    # Pin the selected release variants and branch image before collecting old
-    # outputs. The image closures include everything required to reload them.
+    # Pin only configured variants before collecting old outputs.
+    # The image closures include everything required to reload them.
     mkdir -p /nix/var/nix/gcroots/farmos-containers
+    set --
+    for output in $CACHE_OUTPUTS; do
+      set -- "$@" "path:./build/nix-source#$output"
+    done
+    [ "$#" -gt 0 ] || { echo "No configured images to retain" >&2; exit 1; }
     nix --extra-experimental-features "nix-command flakes" build \
       --out-link /nix/var/nix/gcroots/farmos-containers/current \
-      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR\"" "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-dev\"" \
-      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-runtime\"" "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-dev-runtime\"" \
-      path:./build/nix-source#farmos-4x-dev
+      "$@"
     # Retain the small loaders too, so loading an unchanged image does not
     # require rebuilding nix2container or its Skopeo transport.
+    set --
+    for output in $CACHE_OUTPUTS; do
+      set -- "$@" "path:./build/nix-source#$output.copyToDockerDaemon"
+    done
     nix --extra-experimental-features "nix-command flakes" build \
       --out-link /nix/var/nix/gcroots/farmos-containers/loader \
-      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR\".copyToDockerDaemon" \
-      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-dev\".copyToDockerDaemon" \
-      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-runtime\".copyToDockerDaemon" \
-      "path:./build/nix-source#\"farmos-$RELEASE_MAJOR-dev-runtime\".copyToDockerDaemon" \
-      path:./build/nix-source#farmos-4x-dev.copyToDockerDaemon
+      "$@"
     nix-store --gc
     nix-store --optimise
     echo "Nix store after:"

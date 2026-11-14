@@ -5,19 +5,18 @@ for AMD64 and ARM64 at `ghcr.io/wotnak/farmos`.
 
 ## Image variants
 
-| Variant | Tags | Contents |
+All images support AMD64 and ARM64. Use these tags with `ghcr.io/wotnak/farmos`:
+
+| Variant | Tag | Contents |
 | --- | --- | --- |
-| Production | `4` | farmOS with the production PHP runtime. |
-| Development | `4-dev` | farmOS, Composer, Xdebug, Git, PostgreSQL tools, and test tools. |
+| Production | `4` | farmOS 4 with the production PHP runtime. |
+| Development | `4-dev` | farmOS 4, Composer, Xdebug, Git, PostgreSQL tools, and test tools. |
 | Runtime | `4-runtime` | Production PHP runtime; supply your own installed codebase. |
 | Development runtime | `4-dev-runtime` | Development PHP and tools; supply your own codebase and test tools. |
-| Upstream development | `4.x-dev` | Latest upstream 4.x checkout with development tools. |
+| Development branch | `4.x-dev` | The upstream farmOS 4.x development branch with development tools. |
 
-Each major tracks only its latest stable farmOS release, including new minor and
-patch releases. Each build resolves fresh compatible dependencies.
-[versions.json](versions.json) sets the supported release policy.
-Pin an image digest for a fixed deployment.
-See the [image guide](docs/guide.md#image-variants-and-tags) for details.
+The release tags track the latest compatible farmOS 4 release. Pin an image
+digest for a fixed deployment.
 
 ## Environment variables
 
@@ -62,4 +61,3 @@ chosen example. Development images accept `XDEBUG_MODE`, defaulting to
 - [Deployment with contributed modules](examples/prod-contrib/README.md)
 - [Runtime image with your own application](examples/runtime/README.md)
 - [Build, test, and configure images](docs/guide.md)
-- [Image signatures and verification](docs/image-provenance.md)

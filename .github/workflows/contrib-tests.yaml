@@ -8,7 +8,6 @@ on:
       - 'tests/compose*.yaml'
       - 'packages/**'
       - 'images/**'
-      - 'versions.json'
       - 'flake.*'
       - 'Taskfile.yml'
       - 'scripts/**'
@@ -25,12 +24,16 @@ jobs:
   contrib:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      FARMOS_VERSION: ^4.0
+      FARMOS_IMAGE_TAG: contrib-ci
+      FARMOS_IMAGE_VARIANTS: runtime,development-runtime
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
       - uses: nix-community/cache-nix-action@v7
         with:
-          primary-key: nix-contrib-${{ hashFiles('flake.nix', 'packages/**', 'images/**', 'versions.json', 'scripts/**') }}
+          primary-key: nix-contrib-${{ hashFiles('flake.nix', 'packages/**', 'images/**', 'scripts/**') }}
           restore-prefixes-first-match: nix-contrib-
       - uses: go-task/setup-task@v2
         with:

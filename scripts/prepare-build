@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-"""Prepare fresh Nix, upstream, Composer, and application inputs for this build."""
+"""Prepare one Composer configuration and fresh Nix inputs for this build."""
 
 import argparse
-import base64
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,20 +10,18 @@ import shlex
 import shutil
 import subprocess
 import sys
-import urllib.error
-import urllib.request
+import tempfile
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from releases import ReleaseError, read_policy, validate_major, write_versions
+from build_config import PROFILE_KEYS, load, normalize
 from nix_source import snapshot
 
-import discover_upstream as discovery
 
 HASH = re.compile(r"^\s*got:\s*(sha256-[A-Za-z0-9+/]{43}=)\s*$", re.MULTILINE)
 
 
-class PreparationError(ReleaseError):
+class PreparationError(ValueError):
     """Fresh build input preparation failed."""
 
 
@@ -83,22 +79,43 @@ def output_path(result):
     return Path(paths[0])
 
 
-def archive_hash(repository, revision):
-    url = f"https://github.com/farmOS/{repository}/archive/{revision}.tar.gz"
-    digest = hashlib.sha256()
+def write_build(root, data):
+    path = root / ".build-inputs/build.json"
+    temporary = None
     try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            while chunk := response.read(1024 * 1024):
-                digest.update(chunk)
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise PreparationError(f"Could not download {repository} archive {revision}") from None
-    return "sha256-" + base64.b64encode(digest.digest()).decode()
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".build-",
+                                         suffix=".json", delete=False) as output:
+            temporary = Path(output.name)
+            json.dump(data, output, indent=2)
+            output.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
-def resolve_composer(root, nix, selector):
-    attribute = "farmos-4x-dev-app" if selector == "4.x" else f"farmos-{selector}-dev-app"
+def locked_release(lock):
+    if not isinstance(lock, dict):
+        raise PreparationError("Composer lock must contain an object")
+    packages = []
+    for key in ("packages", "packages-dev"):
+        entries = lock.get(key, [])
+        if not isinstance(entries, list) or any(not isinstance(entry, dict) for entry in entries):
+            raise PreparationError("Composer lock packages must be arrays of objects")
+        packages.extend(entries)
+    matches = [package for package in packages if package.get("name") == "farmos/farmos"]
+    if len(matches) != 1 or not isinstance(matches[0].get("version"), str) or not matches[0]["version"]:
+        raise PreparationError("Composer lock must identify exactly one farmos/farmos version")
+    resolved = {key: matches[0].get(key) for key in ("version", "source", "dist")}
+    if any(resolved[key] is not None and not isinstance(resolved[key], dict) for key in ("source", "dist")):
+        raise PreparationError("Locked farmOS source and dist must be objects or null")
+    return resolved
+
+
+def resolve_composer(root, nix):
+    attribute = "farmos-dev-app"
     # A unique derivation name forces live dependency resolution even when the
-    # selected release and source archives match a previous invocation.
+    # configured constraint resolves to the same packages as a previous invocation.
     nonce = uuid.uuid4().hex
     expression = nix.resolver_expression(attribute, nonce)
     result = nix.build("--impure", "--expr", expression)
@@ -107,16 +124,17 @@ def resolve_composer(root, nix, selector):
         expression = nix.resolver_expression(attribute, nonce, resolved_hash)
         result = nix.build("--impure", "--expr", expression)
     resolved = output_path(result)
-    destination = root / ".build-inputs/composer" / ("4.x" if selector == "4.x" else f"releases/{selector}")
+    destination = root / ".build-inputs/composer"
     destination.mkdir(parents=True)
     for name in ("composer.json", "composer.lock"):
         source = resolved / name
         if not isinstance(json.loads(source.read_text()), dict):
             raise PreparationError(f"Resolver returned invalid {name}")
         shutil.copyfile(source, destination / name)
+    return locked_release(json.loads((destination / "composer.lock").read_text()))
 
 
-def prepare_app_hash(root, nix, data, selector, field, attribute):
+def prepare_app_hash(root, nix, data, field, attribute):
     print(f"Calculating application output hash for {attribute}...", flush=True)
     result = nix.build(f'.#"{attribute}"')
     if result.returncode:
@@ -127,8 +145,8 @@ def prepare_app_hash(root, nix, data, selector, field, attribute):
         value = nix.checked("hash", "path", "--type", "sha256", str(output_path(result)))
         if not re.fullmatch(r"sha256-[A-Za-z0-9+/]{43}=", value):
             raise PreparationError("Nix returned an invalid application output hash")
-    data["versions"][selector][field] = value
-    write_versions(root, data)
+    data[field] = value
+    write_build(root, data)
     # This regular build verifies the calculated hash. No reproducibility rebuild.
     if result.returncode:
         output_path(nix.build(f'.#"{attribute}"'))
@@ -148,11 +166,15 @@ def clear_generated(root):
     (root / "flake.lock").unlink(missing_ok=True)
 
 
-def prepare(root, *, major=None, branch_only=False):
+def prepare(root, *, configuration=None):
     root = root.resolve()
-    policy = read_policy(root)
-    if major is not None:
-        validate_major(major, policy["minimum_major"])
+    if configuration is None:
+        profile = load()
+    else:
+        settings = json.loads(Path(configuration).read_text())
+        if not isinstance(settings, dict):
+            raise PreparationError("Build configuration must be an object")
+        profile = normalize({key: settings[key] for key in PROFILE_KEYS if key in settings})
     lock = root / ".prepare-build.lock"
     try:
         lock.mkdir()
@@ -164,6 +186,8 @@ def prepare(root, *, major=None, branch_only=False):
         inputs.mkdir()
         marker = inputs / ".preparing"
         marker.touch()
+        data = {**profile, "resolved": {}, "prodHash": "", "devHash": ""}
+        write_build(root, data)
         nix = Nix(root)
         print("Refreshing Nix flake inputs...", flush=True)
         source = snapshot(root)
@@ -171,40 +195,20 @@ def prepare(root, *, major=None, branch_only=False):
         if not (source / "flake.lock").is_file():
             raise PreparationError("Nix did not generate flake.lock")
         shutil.copyfile(source / "flake.lock", root / "flake.lock")
-        selected = {} if branch_only else discovery.latest_releases(policy["minimum_major"])
-        if major is not None:
-            if major not in selected:
-                raise PreparationError(f"No published stable release found for major {major}")
-            selected = {major: selected[major]}
-        data = {"minimum_major": policy["minimum_major"], "versions": {
-            key: {"version": selected[key], "prodHash": "", "devHash": ""}
-            for key in sorted(selected, key=int)
-        }}
-        if major is None:
-            farmos_rev = discovery.branch_head("farmOS")
-            project_rev = discovery.branch_head("composer-project")
-            data["versions"]["4.x"] = {
-                "constraint": "4.x-dev", "farmosRev": farmos_rev,
-                "farmosSourceHash": archive_hash("farmOS", farmos_rev),
-                "composerProjectRev": project_rev,
-                "composerProjectHash": archive_hash("composer-project", project_rev), "devHash": "",
-            }
-        write_versions(root, data)
-        for selector in data["versions"]:
-            print(f"Resolving fresh Composer dependencies for {selector}...", flush=True)
-            resolve_composer(root, nix, selector)
-            if selector == "4.x":
-                prepare_app_hash(root, nix, data, selector, "devHash", "farmos-4x-dev-app")
-            else:
-                prepare_app_hash(root, nix, data, selector, "prodHash", f"farmos-{selector}-app")
-                prepare_app_hash(root, nix, data, selector, "devHash", f"farmos-{selector}-dev-app")
+        print("Resolving fresh Composer dependencies...", flush=True)
+        data["resolved"] = resolve_composer(root, nix)
+        write_build(root, data)
+        for variant, field, attribute in [
+            ("production", "prodHash", "farmos-app"),
+            ("development", "devHash", "farmos-dev-app"),
+        ]:
+            if variant in profile["variants"]:
+                prepare_app_hash(root, nix, data, field, attribute)
         marker.unlink()
         snapshot(root)
         print("Prepared fresh build inputs in .build-inputs/ and flake.lock; Nix source is build/nix-source.", flush=True)
         return data
     except BaseException:
-        # Invalidate the entire generation. A previous successful snapshot is
-        # deliberately not restored and cannot be mistaken for this failed run.
         clear_generated(root)
         raise
     finally:
@@ -213,13 +217,12 @@ def prepare(root, *, major=None, branch_only=False):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    scope = parser.add_mutually_exclusive_group()
-    scope.add_argument("--major", help="Prepare only the latest stable release for this major")
-    scope.add_argument("--branch-only", action="store_true", help="Prepare only the current development branch")
+    parser.add_argument("--configuration", type=Path,
+                        help="Build profile JSON")
     args = parser.parse_args(argv)
     try:
-        prepare(Path(__file__).resolve().parent.parent, major=args.major, branch_only=args.branch_only)
-    except (ReleaseError, OSError, ValueError, KeyboardInterrupt) as error:
+        prepare(Path(__file__).resolve().parent.parent, configuration=args.configuration)
+    except (OSError, ValueError, KeyboardInterrupt) as error:
         print(f"Build input preparation failed: {error}. Run scripts/prepare-build again before building.", file=sys.stderr)
         return 1
     return 0

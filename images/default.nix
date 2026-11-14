@@ -1,24 +1,24 @@
 {
   pkgs,
   nix2container,
-  release,
+  profile,
   runtime,
   app,
-  imageSource ? { },
 }:
 
 let
   inherit (pkgs) lib;
-  releaseMajor = lib.versions.major release.version;
+  baseTag = profile."image-tag";
+  resolvedVersion = profile.resolved.version or profile."farmos-version";
   inherit (runtime)
     frankenphpProduction
     frankenphpDevelopment
     phpCliDevelopment
     composerPhar
     ;
-  inherit (app) farmosRelease farmosReleaseDevelopment farmosBranchDevelopment;
+  inherit (app) farmosProduction farmosDevelopment;
 
-  imageName = "ghcr.io/wotnak/farmos";
+  imageName = profile."image-name";
   farmosUid = 65532;
   farmosGid = 65532;
 
@@ -144,7 +144,7 @@ let
 
   productionRoot = mkRoot {
     name = "farmos-root";
-    app = farmosRelease;
+    app = farmosProduction;
     frankenphp = frankenphpProduction;
   };
 
@@ -161,16 +161,9 @@ let
     serverScript = runtime.scripts.serveProject;
   };
 
-  releaseDevelopmentRoot = mkRoot {
+  developmentRoot = mkRoot {
     name = "farmos-dev-root";
-    app = farmosReleaseDevelopment;
-    frankenphp = frankenphpDevelopment;
-    development = true;
-  };
-
-  branchDevelopmentRoot = mkRoot {
-    name = "farmos-4x-dev-root";
-    app = farmosBranchDevelopment;
+    app = farmosDevelopment;
     frankenphp = frankenphpDevelopment;
     development = true;
   };
@@ -195,11 +188,8 @@ let
     Labels = {
       "org.opencontainers.image.title" = "farmOS";
       "org.opencontainers.image.description" = description;
-      "org.opencontainers.image.source" = imageSource.source or "https://github.com/farmOS/farmOS";
       "org.opencontainers.image.licenses" = "GPL-2.0-or-later";
       "org.opencontainers.image.version" = version;
-    } // lib.optionalAttrs ((imageSource.revision or null) != null) {
-      "org.opencontainers.image.revision" = imageSource.revision;
     };
   };
 
@@ -262,50 +252,49 @@ let
     };
 
   productionImage = mkImage {
-    tag = releaseMajor;
+    tag = baseTag;
     root = productionRoot;
-    config = imageConfig release.version "Minimal farmOS image served by FrankenPHP in classic mode";
+    config = imageConfig resolvedVersion "Minimal farmOS image served by FrankenPHP in classic mode";
   };
 
   runtimeImage = mkImage {
-    tag = "${releaseMajor}-runtime";
+    tag = "${baseTag}-runtime";
     root = runtimeRoot;
-    config = imageConfig release.version "farmOS PHP runtime for a supplied application";
+    config = imageConfig resolvedVersion "farmOS PHP runtime for a supplied application";
   };
 
   developmentRuntimeImage = mkImage {
-    tag = "${releaseMajor}-dev-runtime";
+    tag = "${baseTag}-dev-runtime";
     root = developmentRuntimeRoot;
-    config = imageConfig release.version "farmOS development PHP runtime and tools for a supplied application";
+    config = imageConfig resolvedVersion "farmOS development PHP runtime and tools for a supplied application";
     development = true;
   };
 
-  releaseDevelopmentImage = mkImage {
-    tag = "${releaseMajor}-dev";
-    root = releaseDevelopmentRoot;
-    config = imageConfig release.version "farmOS development image with Composer, Xdebug, and test tools";
+  developmentImage = mkImage {
+    tag = "${baseTag}-dev";
+    root = developmentRoot;
+    config = imageConfig resolvedVersion "farmOS development image with Composer, Xdebug, and test tools";
     development = true;
   };
 
-  branchDevelopmentImage = mkImage {
-    tag = "4.x-dev";
-    root = branchDevelopmentRoot;
-    config = imageConfig "4.x-dev" "farmOS 4.x checkout development image";
-    development = true;
-  };
 in
-{
-  default = productionImage;
-  farmos = productionImage;
-  "farmos-runtime" = runtimeImage;
-  "farmos-dev-runtime" = developmentRuntimeImage;
-  "farmos-dev" = releaseDevelopmentImage;
-  "farmos-4x-dev" = branchDevelopmentImage;
-
-  "farmos-app" = farmosRelease;
-  "farmos-dev-app" = farmosReleaseDevelopment;
-  "farmos-4x-dev-app" = farmosBranchDevelopment;
-  "frankenphp-farmos" = frankenphpProduction;
-  "frankenphp-farmos-dev" = frankenphpDevelopment;
-  inherit composerPhar;
-}
+  lib.optionalAttrs (builtins.elem "production" profile.variants) {
+    default = productionImage;
+    farmos = productionImage;
+  }
+  // lib.optionalAttrs (builtins.elem "development" profile.variants) {
+    "farmos-dev" = developmentImage;
+  }
+  // lib.optionalAttrs (builtins.elem "runtime" profile.variants) {
+    "farmos-runtime" = runtimeImage;
+  }
+  // lib.optionalAttrs (builtins.elem "development-runtime" profile.variants) {
+    "farmos-dev-runtime" = developmentRuntimeImage;
+  }
+  // {
+    "farmos-app" = farmosProduction;
+    "farmos-dev-app" = farmosDevelopment;
+    "frankenphp-farmos" = frankenphpProduction;
+    "frankenphp-farmos-dev" = frankenphpDevelopment;
+    inherit composerPhar;
+  }

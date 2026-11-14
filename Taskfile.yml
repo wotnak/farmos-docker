@@ -1,319 +1,202 @@
+# Resolve dependencies once per invocation; Task loads the local environment.
 version: '3'
-
-# Call tasks through cmds so builds, loads, and tests run in order.
-# Build/load tasks run once per invocation, even when several tests use them.
+dotenv: ['.env']
 vars:
-  # Select a major before preparation, including in a clean checkout.
-  RELEASE_MAJOR: '{{.RELEASE_MAJOR | default "4"}}'
-  IMAGE_REPOSITORY: '{{.IMAGE_REPOSITORY | default "ghcr.io/wotnak/farmos"}}'
-  NIX: '{{.NIX | default "nix"}}'
-  NIX_FLAGS: '{{if hasKey . "NIX_FLAGS"}}{{.NIX_FLAGS}}{{else}}--extra-experimental-features "nix-command flakes"{{end}}'
-  NIX_SYSTEM:
-    sh: |
-      {{if .NIX_SYSTEM}}printf %s {{.NIX_SYSTEM | shellQuote}}{{else}}
-      case "$(uname -m)" in
-        x86_64|amd64) printf x86_64-linux ;;
-        arm64|aarch64) printf aarch64-linux ;;
-        *) echo 'Unsupported architecture; set NIX_SYSTEM explicitly' >&2; exit 1 ;;
-      esac
-      {{end}}
-  PROD_TAG: '{{.IMAGE_REPOSITORY}}:{{.RELEASE_MAJOR}}'
-  DEV_TAG: '{{.IMAGE_REPOSITORY}}:{{.RELEASE_MAJOR}}-dev'
-  RUNTIME_TAG: '{{.IMAGE_REPOSITORY}}:{{.RELEASE_MAJOR}}-runtime'
-  DEV_RUNTIME_TAG: '{{.IMAGE_REPOSITORY}}:{{.RELEASE_MAJOR}}-dev-runtime'
-  BRANCH_DEV: '{{.IMAGE_REPOSITORY}}:4.x-dev'
-  PROD_IMAGE: 'build/farmos-{{.RELEASE_MAJOR}}'
-  DEV_IMAGE: 'build/farmos-{{.RELEASE_MAJOR}}-dev'
-  RUNTIME_IMAGE: 'build/farmos-{{.RELEASE_MAJOR}}-runtime'
-  DEV_RUNTIME_IMAGE: 'build/farmos-{{.RELEASE_MAJOR}}-dev-runtime'
-  BRANCH_DEV_IMAGE: build/farmos-4.x-dev
-  NIX_BUILD: '{{.NIX | shellQuote}} {{.NIX_FLAGS}} build --system {{.NIX_SYSTEM | shellQuote}}'
-  NIX_COPY: '{{.NIX | shellQuote}} {{.NIX_FLAGS}} run path:./build/nix-source#skopeo-nix2container -- --insecure-policy copy'
-
+  CONFIGURATION: '{{.CONFIGURATION | default ""}}'
+  LOCAL: >-
+    python3 {{printf "%s/scripts/local_build.py" .ROOT_DIR | shellQuote}}
+    --root {{.ROOT_DIR | shellQuote}}
+    {{if .CONFIGURATION}}--configuration {{.CONFIGURATION | shellQuote}}{{end}}
 tasks:
   default:
     cmds:
-      - task: all
-
+    - task: images
   all:
-    desc: Build all release image variants
+    desc: Build the configured image variants
     cmds:
-      - task: release-images
-
+    - task: images
   prepare-inputs:
-    desc: Resolve current flake inputs, releases, branch, and Composer dependencies
+    desc: Resolve fresh Nix and Composer inputs for the configured profile
     run: once
     cmds:
-      - 'NIX={{.NIX | shellQuote}} NIX_FLAGS={{.NIX_FLAGS | shellQuote}} NIX_SYSTEM={{.NIX_SYSTEM | shellQuote}} scripts/prepare-build'
-
+    - '{{.LOCAL}} prepare'
   build:
-    desc: Prepare fresh dependencies and create the build output directory
+    desc: Build only the configured image variants
     run: once
     cmds:
-      - task: prepare-inputs
-      - mkdir -p build
-
-  image:
-    desc: Build the production image
-    run: once
-    cmds:
-      - task: build
-      - '{{.NIX_BUILD}} ''path:./build/nix-source#"farmos-{{.RELEASE_MAJOR}}"'' --out-link {{.PROD_IMAGE | shellQuote}}'
-
-  dev-image:
-    desc: Build the release development image
-    run: once
-    cmds:
-      - task: build
-      - '{{.NIX_BUILD}} ''path:./build/nix-source#"farmos-{{.RELEASE_MAJOR}}-dev"'' --out-link {{.DEV_IMAGE | shellQuote}}'
-
-  runtime-image:
-    desc: Build the runtime image
-    run: once
-    cmds:
-      - task: build
-      - '{{.NIX_BUILD}} ''path:./build/nix-source#"farmos-{{.RELEASE_MAJOR}}-runtime"'' --out-link {{.RUNTIME_IMAGE | shellQuote}}'
-
-  branch-dev-image:
-    desc: Build the current 4.x development image
-    run: once
-    cmds:
-      - task: build
-      - '{{.NIX_BUILD}} path:./build/nix-source#farmos-4x-dev --out-link {{.BRANCH_DEV_IMAGE | shellQuote}}'
-
-  dev-runtime-image:
-    desc: Build the development runtime for a supplied codebase
-    run: once
-    cmds:
-      - task: build
-      - '{{.NIX_BUILD}} ''path:./build/nix-source#"farmos-{{.RELEASE_MAJOR}}-dev-runtime"'' --out-link {{.DEV_RUNTIME_IMAGE | shellQuote}}'
-
-  release-images:
-    desc: Build all four release image variants
-    cmds:
-      - task: image
-      - task: dev-image
-      - task: runtime-image
-      - task: dev-runtime-image
-
-  contrib-ci-test:
-    desc: Verify contributed module CI using the development image
-    cmds:
-      - task: load-dev
-      - task: contrib-ci-test-loaded
-
-  contrib-ci-test-loaded:
-    desc: Verify module QA with an already loaded development image
-    cmds:
-      - 'IMAGE={{.IMAGE | default .DEV_TAG | shellQuote}} bash tests/contrib-ci-test.sh'
-
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared build'
   images:
-    desc: Build every release and branch image
+    desc: Build only the configured image variants
     cmds:
-      - task: release-images
-      - task: branch-dev-image
-
+    - task: build
+  image:
+    desc: Build production, if enabled
+    run: once
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant production build'
+  dev-image:
+    desc: Build development, if enabled
+    run: once
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant development build'
+  runtime-image:
+    desc: Build runtime, if enabled
+    run: once
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant runtime build'
+  dev-runtime-image:
+    desc: Build development-runtime, if enabled
+    run: once
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant development-runtime build'
   load:
-    desc: Build and load the production image into Docker
+    desc: Build and load only the configured image variants into Docker
     run: once
     cmds:
-      - task: image
-      - '{{.NIX_COPY}} {{printf "nix:%s/%s" .ROOT_DIR .PROD_IMAGE | shellQuote}} {{printf "docker-daemon:%s" .PROD_TAG | shellQuote}}'
-
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared load'
+  load-prepared:
+    desc: Build and load one variant from already prepared inputs
+    requires:
+      vars: [VARIANT]
+    cmds:
+    - '{{.LOCAL}} --prepared --variant {{.VARIANT | shellQuote}} load'
+  load-production:
+    desc: Build and load production, if enabled
+    run: once
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant production load'
   load-dev:
-    desc: Build and load the release development image into Docker
+    desc: Build and load development, if enabled
     run: once
     cmds:
-      - task: dev-image
-      - '{{.NIX_COPY}} {{printf "nix:%s/%s" .ROOT_DIR .DEV_IMAGE | shellQuote}} {{printf "docker-daemon:%s" .DEV_TAG | shellQuote}}'
-
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant development load'
   load-runtime:
-    desc: Build and load the runtime image into Docker
+    desc: Build and load runtime, if enabled
     run: once
     cmds:
-      - task: runtime-image
-      - '{{.NIX_COPY}} {{printf "nix:%s/%s" .ROOT_DIR .RUNTIME_IMAGE | shellQuote}} {{printf "docker-daemon:%s" .RUNTIME_TAG | shellQuote}}'
-
-  load-branch-dev:
-    desc: Build and load the current 4.x development image into Docker
-    run: once
-    cmds:
-      - task: branch-dev-image
-      - '{{.NIX_COPY}} {{printf "nix:%s/%s" .ROOT_DIR .BRANCH_DEV_IMAGE | shellQuote}} {{printf "docker-daemon:%s" .BRANCH_DEV | shellQuote}}'
-
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant runtime load'
   load-dev-runtime:
-    desc: Build and load the development runtime image into Docker
+    desc: Build and load development-runtime, if enabled
     run: once
     cmds:
-      - task: dev-runtime-image
-      - '{{.NIX_COPY}} {{printf "nix:%s/%s" .ROOT_DIR .DEV_RUNTIME_IMAGE | shellQuote}} {{printf "docker-daemon:%s" .DEV_RUNTIME_TAG | shellQuote}}'
-
-  test:
-    desc: Build and smoke test the production image
-    cmds:
-      - task: load
-      - 'IMAGE={{.PROD_TAG | shellQuote}} sh tests/smoke-test.sh'
-
-  dev-test:
-    desc: Build and smoke test the release development image
-    cmds:
-      - task: load-dev
-      - 'DEV=1 IMAGE={{.DEV_TAG | shellQuote}} sh tests/smoke-test.sh'
-
-  branch-dev-test:
-    desc: Build and smoke test the current 4.x development image
-    cmds:
-      - task: load-branch-dev
-      - 'DEV=1 IMAGE={{.BRANCH_DEV | shellQuote}} sh tests/smoke-test.sh'
-
-  runtime-test:
-    desc: Build and test the PHP runtime and mounted projects
-    cmds:
-      - task: load-runtime
-      - 'IMAGE={{.RUNTIME_TAG | shellQuote}} python3 tests/runtime-image-test.py'
-
-  dev-runtime-test:
-    desc: Build and test development tools with a supplied codebase
-    cmds:
-      - task: load-dev-runtime
-      - 'DEV=1 IMAGE={{.DEV_RUNTIME_TAG | shellQuote}} python3 tests/runtime-image-test.py'
-
-  database-test:
-    desc: Test database settings, PostgreSQL, and SQLite persistence
-    cmds:
-      - task: load
-      - 'DB_TEST_IMAGE={{.PROD_TAG | shellQuote}} python3 tests/test-database-settings.py'
-
-  e2e-test:
-    desc: Build and test farmOS installation, core workflows and persistence
-    cmds:
-      - task: load
-      - task: e2e-test-loaded
-        vars:
-          IMAGE: '{{.PROD_TAG}}'
-
-  e2e-test-loaded:
-    desc: Run the full farmOS E2E suite against an already loaded production IMAGE
-    cmds:
-      - 'IMAGE={{.IMAGE | default .PROD_TAG | shellQuote}} TEST_ARTIFACTS={{.TEST_ARTIFACTS | default "build/tests/e2e" | shellQuote}} bash tests/e2e/scripts/test.sh'
-
-  contrib-test:
-    desc: Build runtimes and test current contrib modules
-    cmds:
-      - task: load-runtime
-      - task: load-dev-runtime
-      - task: contrib-test-loaded
-
-  contrib-test-loaded:
-    desc: Test all seven contrib modules with loaded runtime images
-    cmds:
-      - 'RUNTIME_IMAGE={{.CONTRIB_RUNTIME_IMAGE | default .RUNTIME_TAG | shellQuote}} DEV_RUNTIME_IMAGE={{.CONTRIB_DEV_RUNTIME_IMAGE | default .DEV_RUNTIME_TAG | shellQuote}} CONTRIB_MODULES={{.CONTRIB_MODULES | default "" | shellQuote}} TEST_ARTIFACTS={{.TEST_ARTIFACTS | default "build/tests/contrib" | shellQuote}} COMPOSER_CACHE_PATH={{printf "%s/build/tests/contrib/composer-cache" .ROOT_DIR | shellQuote}} bash tests/e2e/scripts/contrib-test.sh'
-
-  phpunit-test:
-    desc: Build and run upstream tests in the release development image
-    cmds:
-      - task: load-dev
-      - task: phpunit-test-loaded
-        vars:
-          IMAGE: '{{.DEV_TAG}}'
-
-  phpunit-test-loaded:
-    desc: Run upstream PHPUnit against an already loaded development IMAGE
-    cmds:
-      - 'IMAGE={{.IMAGE | default .DEV_TAG | shellQuote}} TEST_ARTIFACTS={{.TEST_ARTIFACTS | default "" | shellQuote}} bash tests/phpunit-test.sh {{.CLI_ARGS}}'
-
-  branch-phpunit-test:
-    desc: Build and run upstream tests in the current 4.x development image
-    cmds:
-      - task: load-branch-dev
-      - task: phpunit-test-loaded
-        vars:
-          IMAGE: '{{.BRANCH_DEV}}'
-          TEST_ARTIFACTS: '{{.TEST_ARTIFACTS | default "build/tests/phpunit-4x"}}'
-
-  tests:
-    desc: Build and run all image and application tests sequentially
-    cmds:
-      - task: test
-      - task: dev-test
-      - task: branch-dev-test
-      - task: runtime-test
-      - task: dev-runtime-test
-      - task: database-test
-      - task: e2e-test
-      - task: contrib-test
-      - task: contrib-ci-test
-      - task: phpunit-test
-      - task: branch-phpunit-test
-
-  regression-test:
-    desc: Run build and publishing regression tests without image builds
-    cmds:
-      - python3 -W error tests/test-discover-upstream.py
-      - python3 -W error tests/test-nix-source.py
-      - python3 -W error tests/test-prepare-build.py
-      - python3 -W error tests/test-release-lines.py
-      - python3 -W error tests/test-image-evidence.py
-      - python3 -W error tests/test-image-publishing.py
-      - python3 -W error tests/test-image-promotion.py
-
-  run:
-    desc: Build and start the production Compose deployment
-    cmds:
-      - task: load
-      - |
-        printf 'services:\n  farmos:\n    image: %s\n  cron:\n    image: %s\n' {{.PROD_TAG | shellQuote}} {{.PROD_TAG | shellQuote}} |
-          {{if eq (.PUBLIC_HTTPS | default "false") "true"}}FARMOS_AUTO_HTTPS=true FARMOS_BIND_ADDRESS=0.0.0.0 FARMOS_PORT=80 FARMOS_HTTPS_PORT=443 {{end}}docker compose --project-directory examples/prod -f examples/prod/compose.yaml -f - up -d
-
-  run-https:
-    desc: Start farmOS with automatic HTTPS for FARMOS_DOMAIN
-    cmds:
-      - task: run
-        vars:
-          PUBLIC_HTTPS: "true"
-
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant development-runtime load'
   push:
-    desc: Build, load, and push release image tags
+    desc: Build, load, and push only the configured image variants
     cmds:
-      - task: load
-      - task: load-dev
-      - task: load-runtime
-      - task: load-dev-runtime
-      - 'for tag in {{.PROD_TAG | shellQuote}} {{.DEV_TAG | shellQuote}} {{.RUNTIME_TAG | shellQuote}} {{.DEV_RUNTIME_TAG | shellQuote}}; do docker push "$tag" || exit; done'
-
-  push-branch-dev:
-    desc: Build, load, and push the current 4.x development image tag
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared push'
+  tests:
+    desc: Build and run the suites for each configured image variant
     cmds:
-      - task: load-branch-dev
-      - 'docker push {{.BRANCH_DEV | shellQuote}}'
-
-  prepare-release:
-    desc: Resolve fresh dependencies for RELEASE_MAJOR
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared test'
+  test:
+    desc: Run smoke tests for production, if enabled
     cmds:
-      - 'NIX={{.NIX | shellQuote}} NIX_FLAGS={{.NIX_FLAGS | shellQuote}} NIX_SYSTEM={{.NIX_SYSTEM | shellQuote}} scripts/prepare-build --major {{.RELEASE_MAJOR | shellQuote}}'
-
-  prepare-branch:
-    desc: Resolve fresh 4.x sources and dependencies
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant production --suite smoke test'
+  dev-test:
+    desc: Run smoke tests for development, if enabled
     cmds:
-      - 'NIX={{.NIX | shellQuote}} NIX_FLAGS={{.NIX_FLAGS | shellQuote}} NIX_SYSTEM={{.NIX_SYSTEM | shellQuote}} scripts/prepare-build --branch-only'
-
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant development --suite smoke test'
+  runtime-test:
+    desc: Run runtime tests for runtime, if enabled
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant runtime --suite runtime test'
+  dev-runtime-test:
+    desc: Run runtime tests for development-runtime, if enabled
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant development-runtime --suite runtime test'
+  database-test:
+    desc: Run database tests for production, if enabled
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant production --suite database test'
+  e2e-test:
+    desc: Run e2e tests for production, if enabled
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant production --suite e2e test'
+  phpunit-test:
+    desc: Run phpunit tests for development, if enabled
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant development --suite phpunit test {{.CLI_ARGS}}'
+  contrib-ci-test:
+    desc: Run contrib-ci tests for development, if enabled
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --variant development --suite contrib-ci test'
+  e2e-test-loaded:
+    desc: Run e2e tests against an already loaded production image
+    cmds:
+    - '{{.LOCAL}} --loaded --variant production --suite e2e test'
+  test-loaded:
+    desc: Test an already loaded variant, optionally selecting a suite
+    requires:
+      vars: [VARIANT]
+    cmds:
+    - >-
+      {{.LOCAL}} --loaded --variant {{.VARIANT | shellQuote}}
+      {{if .SUITE}}--suite {{.SUITE | shellQuote}}{{end}} test {{.CLI_ARGS}}
+  database-test-loaded:
+    desc: Run database tests against an already loaded production image
+    cmds:
+    - '{{.LOCAL}} --loaded --variant production --suite database test'
+  phpunit-test-loaded:
+    desc: Run phpunit tests against an already loaded development image
+    cmds:
+    - '{{.LOCAL}} --loaded --variant development --suite phpunit test {{.CLI_ARGS}}'
+  contrib-ci-test-loaded:
+    desc: Run contrib-ci tests against an already loaded development image
+    cmds:
+    - '{{.LOCAL}} --loaded --variant development --suite contrib-ci test'
+  contrib-test:
+    desc: Build both configured runtimes and test contributed modules
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --suite contrib test'
+  contrib-test-loaded:
+    desc: Test contributed modules with the configured loaded runtime pair
+    cmds:
+    - '{{.LOCAL}} --loaded --suite contrib test'
+  run:
+    desc: Build and start the configured production image
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared run'
+  run-https:
+    desc: Start the configured production image with automatic public HTTPS
+    cmds:
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared --https run'
   flake-check:
-    desc: Prepare fresh inputs and evaluate flake outputs for every system
+    desc: Prepare the configured profile and evaluate all flake systems
     cmds:
-      - task: prepare-inputs
-      - '{{.NIX | shellQuote}} {{.NIX_FLAGS}} flake show path:./build/nix-source --all-systems >/dev/null'
-
+    - task: prepare-inputs
+    - '{{.LOCAL}} --prepared flake-check'
   clean:
     desc: Remove generated build outputs and test reports
     cmds:
-      - 'if [ -d build ]; then find build -mindepth 1 -delete; fi'
-
+    - if [ -d build ]; then find build -mindepth 1 -delete; fi
   cache-info:
     desc: Show usage and retained roots in the Docker Nix build cache
     cmds:
-      - 'bash scripts/nix-build-cache info'
-
+    - bash scripts/nix-build-cache info
   cache-prune:
-    desc: Keep current image outputs and prune obsolete Docker Nix build cache entries
+    desc: Retain configured image outputs and prune the Docker Nix build cache
     cmds:
-      - 'RELEASE_MAJOR={{.RELEASE_MAJOR | shellQuote}} bash scripts/nix-build-cache prune'
+    - '{{.LOCAL}} --prepared cache-prune'
