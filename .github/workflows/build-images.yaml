@@ -36,7 +36,9 @@ permissions:
 jobs:
   prepare:
     name: Prepare ${{ inputs.environment }}
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     permissions:
@@ -110,7 +112,9 @@ jobs:
   build:
     name: Build ${{ inputs.environment }} · ${{ matrix.variant }} · ${{ matrix.arch }}
     needs: prepare
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
@@ -206,7 +210,9 @@ jobs:
     name: Publish ${{ inputs.environment }}
     needs: [prepare, build]
     if: inputs.publish
-    environment: ${{ inputs.environment }}
+    environment:
+      name: ${{ inputs.environment }}
+      deployment: false
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7

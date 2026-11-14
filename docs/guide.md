@@ -235,6 +235,9 @@ container repository, base tag, and selected variants. Environments can use the
 same constraint with different repositories or tags. Choose the container name
 and base tag for each environment's intended images.
 
+Jobs use environments for variables and secrets with `deployment: false`, so
+image builds and publishing do not create GitHub deployment records.
+
 `refresh-images.yaml` runs on pushes to `main` and once a day at 06:00 in
 `Europe/Warsaw`, following local daylight saving time, on the default branch.
 It discovers configured environments and invokes `build-images.yaml` for each
