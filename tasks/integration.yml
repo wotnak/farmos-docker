@@ -86,7 +86,11 @@ tasks:
         set -o pipefail
         case {{.SUITE | shellQuote}} in
           phpunit)
-            {{.COMPOSE}} exec -T phpunit /bin/sh -ec 'chmod -R u+w web/sites; mkdir -p /tmp/phpunit/browser-output'
+            {{.COMPOSE}} exec -T phpunit /bin/sh -ec '
+              chmod -R u+w web/sites
+              mkdir -p /tmp/phpunit/browser-output
+              cat > web/sites/default/settings.testing.php
+            ' < tests/phpunit/settings.testing.php
             {{.COMPOSE}} exec -T phpunit /usr/bin/php vendor/bin/phpunit \
               --configuration /opt/farmos/phpunit.xml \
               --fail-on-empty-test-suite --fail-on-skipped --fail-on-incomplete \
