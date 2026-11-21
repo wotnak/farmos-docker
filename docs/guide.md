@@ -2,7 +2,7 @@
 
 This repository builds farmOS OCI images with Nix and nix2container. Images run as UID and GID 65532 and serve farmOS on port 8080 with FrankenPHP in classic mode.
 
-The production PHP 8.4 runtime enables ZTS and the embed SAPI; CGI, FPM, phpdbg, PEAR, systemd, and Valgrind support are disabled. In production and codebase-free runtime images, `/usr/bin/php` invokes `frankenphp php-cli`. Development images put a native PHP CLI at `/usr/bin/php`, with those unused SAPIs and integrations also disabled. PHPUnit needs a populated `PHP_BINARY` for isolated test processes, and Composer scripts can require PHP CLI flags such as `-d`. Use `frankenphp php-cli` to run the embedded PHP CLI directly.
+The production PHP 8.5 runtime enables ZTS and the embed SAPI. It disables CGI, FPM, phpdbg, PEAR, systemd, and Valgrind support. In production and codebase-free runtime images, `/usr/bin/php` invokes `frankenphp php-cli`. Development images put a native PHP CLI at `/usr/bin/php`, with those unused SAPIs and integrations also disabled. PHPUnit needs a populated `PHP_BINARY` for isolated test processes, and Composer scripts can require PHP CLI flags such as `-d`. Use `frankenphp php-cli` to run the embedded PHP CLI directly.
 
 All variants currently include BusyBox and `/bin/sh` for startup, the PHP wrapper, and the Compose cron service. Drush's standard launcher also requires a shell. Production has no `bash` command on `PATH`, but Nix runtime dependencies still include a Bash executable in `/nix/store`; these are not shell-free images.
 
@@ -394,7 +394,7 @@ tools include `psql`, `pg_dump`, and `pg_restore`; the database server is exclud
 
 ## Run your own Composer project
 
-The `-runtime` image contains the production PHP 8.4 runtime with GEOS and FrankenPHP. Its `php` command uses FrankenPHP's CLI. The `-dev-runtime` image adds native PHP CLI, Composer, Git, PostgreSQL tools, and Xdebug. Both images contain no farmOS, Drupal, or application dependencies; install your own test tools in your project's Composer dependencies. Their tags follow the configured build profile; your project's Composer lock file determines the application version.
+The `-runtime` image contains the production PHP 8.5 runtime with GEOS and FrankenPHP. Its `php` command uses FrankenPHP's CLI. The `-dev-runtime` image adds native PHP CLI, Composer, Git, PostgreSQL tools, and Xdebug. Supply your application and use Composer to install its dependencies and test tools. Image tags follow the configured build profile. Your project's Composer lock file determines the application version.
 
 Build and load it with:
 

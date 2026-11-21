@@ -69,7 +69,7 @@
         system:
         let
           pkgs = import nixpkgs { inherit system; };
-          php = pkgs.php84.withExtensions (
+          php = pkgs.php85.withExtensions (
             { all, enabled }:
             enabled
             ++ (with all; [

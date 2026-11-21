@@ -6,7 +6,7 @@
 
 let
   inherit (pkgs) lib;
-  composerPhp = pkgs.php84.withExtensions (
+  composerPhp = pkgs.php85.withExtensions (
     { all, enabled }:
     enabled ++ (with all; [ bcmath exif pdo_pgsql simplexml ])
   );

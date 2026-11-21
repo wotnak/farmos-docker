@@ -32,7 +32,7 @@ let
     nlsSupport = false;
   };
 
-  phpBase = pkgs.php84.override {
+  phpBase = pkgs.php85.override {
     cgiSupport = false;
     cliSupport = false;
     fpmSupport = false;
@@ -59,7 +59,7 @@ let
   });
 
   # Use nixpkgs' Composer bootstrap PHAR without its PHP/tool wrapper closure.
-  composer = pkgs.php84.packages.composer;
+  composer = pkgs.php85.packages.composer;
   composerPhar = pkgs.fetchurl {
     passthru.version = composer.version;
     url = "https://github.com/composer/composer/releases/download/${composer.version}/composer.phar";
@@ -76,7 +76,6 @@ let
     "iconv"
     "intl"
     "mbstring"
-    "opcache"
     "openssl"
     "pdo"
     "pdo_pgsql"

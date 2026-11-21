@@ -1,5 +1,10 @@
 <?php
 
+if (PHP_MAJOR_VERSION !== 8 || PHP_MINOR_VERSION !== 5) {
+    fwrite(STDERR, 'Expected PHP 8.5, got ' . PHP_VERSION . PHP_EOL);
+    exit(1);
+}
+
 $required = [
     'bcmath',
     'exif',
@@ -13,6 +18,7 @@ $required = [
     'simplexml',
     'tokenizer',
     'xml',
+    'Zend OPcache',
 ];
 $missing = array_filter($required, static fn (string $extension): bool => !extension_loaded($extension));
 
@@ -34,8 +40,6 @@ foreach (['png', 'jpeg', 'gif', 'webp', 'avif'] as $format) {
         fwrite(STDERR, 'GD image round-trip failed: ' . $format . PHP_EOL);
         exit(1);
     }
-    imagedestroy($decoded);
 }
-imagedestroy($image);
 
 echo PHP_VERSION . PHP_EOL;

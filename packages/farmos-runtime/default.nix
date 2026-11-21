@@ -5,10 +5,10 @@ let
 
   mkGeosExtension = php: php.buildPecl {
     pname = "geos";
-    version = "1.0.0-unstable-2024-01-29";
+    version = "1.0.0-unstable-2026-10-16";
     src = pkgs.fetchurl {
-      url = "https://github.com/libgeos/php-geos/archive/dfe1ab17b0f155cc315bc13c75689371676e02e1.tar.gz";
-      hash = "sha256-4/2/YBjCrd+ZrO1w6W8mq4FRzV96Ix/2qAuBmAwaJho=";
+      url = "https://github.com/libgeos/php-geos/archive/1a1c6a95697359892886a2050570007754ce575e.tar.gz";
+      hash = "sha256-dKzaMiVyPO77JPreww73bM9Dctoqyy6+qByw0G8wn/Q=";
     };
     buildInputs = [ pkgs.geos ];
     configureFlags = [ "--with-geos-config=${lib.getExe' pkgs.geos "geos-config"}" ];
