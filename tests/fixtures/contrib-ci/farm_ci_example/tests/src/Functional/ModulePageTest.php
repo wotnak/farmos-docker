@@ -7,12 +7,14 @@ namespace Drupal\Tests\farm_ci_example\Functional;
 use Drupal\Tests\BrowserTestBase;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 
 /**
  * Tests the module and its declared farmOS dependency through HTTP.
  */
 #[CoversNothing]
 #[Group('farm_ci_example')]
+#[RunTestsInSeparateProcesses]
 final class ModulePageTest extends BrowserTestBase {
 
   /**

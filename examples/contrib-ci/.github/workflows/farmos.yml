@@ -97,7 +97,7 @@ jobs:
           php vendor/bin/phpunit -c phpunit.xml --fail-on-empty-test-suite --log-junit /artifacts/phpunit.xml "$module"
           CI
       - uses: actions/upload-artifact@v7
-        if: always()
+        if: failure()
         with:
           name: farmos-module-ci
           path: artifacts/

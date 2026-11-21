@@ -68,6 +68,8 @@ The GitLab job can coexist with Drupal.org's standard templates and explicitly
 replaces inherited setup/teardown. It uses [GitLab's image Docker user setting](https://docs.gitlab.com/ci/yaml/#imagedocker)
 (Runner 16.8+) so the job can write its checkout/artifacts. Both examples run as
 root only inside disposable CI containers; the image normally uses UID 65532.
+Both CI examples upload diagnostic artifacts only on failure. The GitLab failure
+archive includes the JUnit XML reports.
 See Drupal's [template customization guide](https://project.pages.drupalcode.org/gitlab_templates/info/customizations/)
 for adding this job alongside standard Drupal compatibility jobs.
 
@@ -168,12 +170,13 @@ failed assertions and empty test selections. It checks both module-owned and
 farmOS fallback configurations, rejects malformed module configurations, and
 verifies that files outside the module are not analyzed. Functional HTML is retained.
 
-The fixture passed 3 tests and 12 assertions, with 71 farmOS/Drupal dependency
-deprecations reported. Crop Plan `3.0.0-alpha4` passed 1 test and 143 assertions,
-with 15 Drupal/dependency deprecations and 2 PHPUnit metadata deprecations.
-These concern legacy constraint annotations, future return types and docblock
-metadata. Reports retain them; no suppression was added. Projects can choose a
-stricter deprecation policy in their own PHPUnit configuration.
+The fixture and Crop Plan's upstream Kernel test pass with farmOS/Drupal
+dependency deprecations. These concern legacy annotations, future return types,
+process isolation and docblock metadata. The local Kernel and Functional
+fixtures explicitly request process isolation as required by Drupal 11.3.
+Upstream warnings remain visible in the logs and failure reports; no suppression
+was added. Projects can choose a stricter deprecation policy in their own PHPUnit
+configuration.
 
 The shipped farmOS PHPStan config enables unmatched-ignore reporting for its
 whole codebase. For the fallback only, the examples include it from a temporary

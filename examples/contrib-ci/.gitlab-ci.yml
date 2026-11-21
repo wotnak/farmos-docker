@@ -96,9 +96,8 @@ farmos-module-ci:
     - cp -R /tmp/farmos-artifacts/. "$CI_PROJECT_DIR/artifacts/"
     - if [ -d /opt/farmos/web/sites/simpletest/browser_output ]; then cp -R /opt/farmos/web/sites/simpletest/browser_output/. "$CI_PROJECT_DIR/artifacts/browser-output/"; fi
   artifacts:
-    when: always
+    # JUnit XML stays in the failure archive; reports: would upload it on success too.
+    when: on_failure
     expire_in: 2 weeks
     paths: [artifacts/]
-    reports:
-      junit: [artifacts/phpunit.xml, artifacts/phpcs.xml, artifacts/phpstan.xml]
   allow_failure: false

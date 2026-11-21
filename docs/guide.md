@@ -255,7 +255,7 @@ The PHPUnit suite runs the upstream tests under `web/profiles/farm` in the match
 task test VARIANT=development SUITE=phpunit LOADED=true -- --filter Asset
 ```
 
-Reports go into a new run directory under `build/tests/e2e/`, `build/tests/contrib/` or `build/tests/phpunit/`. Set `TEST_ARTIFACTS` to choose another parent directory. CI runs core E2E for production and PHPUnit for development on native AMD64 and ARM64 runners, requiring the applicable checks before publishing image candidates. The contrib workflow runs separately on AMD64 for pull requests and manual dispatches. All retain failure artifacts.
+Reports go into a new run directory under `build/tests/e2e/`, `build/tests/contrib/` or `build/tests/phpunit/`. Set `TEST_ARTIFACTS` to choose another parent directory. CI runs core E2E for production and PHPUnit for development on native AMD64 and ARM64 runners, requiring the applicable checks before publishing image candidates. The contrib workflow runs separately on AMD64 for pull requests and manual dispatches. CI uploads diagnostic reports only when a job fails; build inputs and image digests remain available for downstream jobs.
 
 The flake exposes generic image outputs for the selected variants:
 
@@ -323,8 +323,8 @@ other environments.
 
 For a manual build, open the **Build images** workflow and select one environment.
 Its variables determine the build. Disable the `publish` option to build and
-test images without updating public tags. Temporary architecture candidate
-images are still pushed to the registry.
+test images without updating public tags. Architecture images are still pushed
+to the registry by digest, without creating temporary tags.
 
 CI and local builds share the Task commands. CI runs `task prepare-inputs` once
 for the environment. Each variant worker reuses those inputs; for example, a
@@ -340,13 +340,13 @@ For another registry, set `FARMOS_IMAGE_NAME` and the environment secrets
 `REGISTRY_USERNAME` and `REGISTRY_PASSWORD`. Repository discovery uses the
 workflow's GitHub token; no personal access token is needed.
 
-Temporary architecture images and artifacts use the numeric environment ID to
-keep profiles separate even when their names contain spaces or punctuation.
+Build-input and digest artifacts use the numeric environment ID to keep profiles
+separate even when their names contain spaces or punctuation.
 Manual, push-triggered, and scheduled runs use the current environment settings
 when preparation starts. Each variant worker builds and tests AMD64 and ARM64.
 A failure on either architecture cancels the remaining architecture job for that
 variant. When both architectures pass and publishing is enabled, the worker
-creates that variant's multi-platform manifest from the exact candidate digests
+creates that variant's multi-platform manifest from the exact architecture digests
 and updates only its public tag. Other variants continue independently, so their
 tags can update at different times. Pin a published digest to keep a specific
 build as tags advance.

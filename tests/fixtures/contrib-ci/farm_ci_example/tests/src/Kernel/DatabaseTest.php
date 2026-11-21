@@ -7,12 +7,14 @@ namespace Drupal\Tests\farm_ci_example\Kernel;
 use Drupal\KernelTests\KernelTestBase;
 use PHPUnit\Framework\Attributes\CoversNothing;
 use PHPUnit\Framework\Attributes\Group;
+use PHPUnit\Framework\Attributes\RunTestsInSeparateProcesses;
 
 /**
  * Checks Drupal database access from the contributed module fixture.
  */
 #[CoversNothing]
 #[Group('farm_ci_example')]
+#[RunTestsInSeparateProcesses]
 final class DatabaseTest extends KernelTestBase {
 
   /**
